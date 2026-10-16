@@ -10,6 +10,7 @@ import type {} from '@deepseek-ai/dsh-client-product-analytics/client'
 import { randomUUID } from '@deepseek-ai/dsh-util-crypto'
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type {
+  BundleUpdate,
   BundleInfo,
   ChangeResult,
   IncompatiblePlugin,
@@ -96,6 +97,8 @@ export interface PackageView {
   readonly installed: boolean
   /** Present for a profile dependency the installation does not also supply: the spec `pnpm add` accepts. */
   readonly source?: string
+  /** Latest registry check for this installed package. */
+  readonly update?: BundleUpdate
   /** Whether the installation ships the bundle for the person to switch on: official, off until selected, never removable. */
   readonly optional: boolean
   /** Whether the Host removes the bundle: a profile dependency, or a selection that neither the profile nor the installation holds. */
@@ -116,7 +119,10 @@ export type InstallSubject = Extract<PluginSpecInspection, { status: 'accepted' 
   readonly selection?: boolean
   /** Save an exact dependency version through the generic installer. */
   readonly saveExact?: boolean
-}
+} & (
+  | { readonly updateName?: never }
+  | { readonly updateName: string; readonly version: string }
+)
 
 /** The registry the person picked for an install: one the Host offers, or a typed URL. */
 export type RegistryChoice =
@@ -311,6 +317,8 @@ export interface PluginManagerState {
    */
   readonly refreshStatus: 'idle' | 'refreshing' | 'failed'
   readonly packages: readonly PackageView[]
+  /** Registry lookups run independently of inventory reads. */
+  readonly updateStatus?: 'checking' | 'done' | 'failed'
   /** Package names and row keys with an action crossing the wire. */
   readonly busy: readonly string[]
   readonly notice: ManagerNotice | null
@@ -340,6 +348,8 @@ export interface PluginManagerFace {
   ensure: () => void
   /** Read the Host again. */
   refresh: () => void
+  /** Check installed plugins for newer registry releases. */
+  checkUpdates: () => void
   openInstall: () => void
   /**
    * Open the install dialog with a version the person confirmed elsewhere, such as a Discover entry, and start
@@ -559,6 +569,8 @@ export class PluginManagerController {
   /** Cancels the check the dialog has in flight. */
   private inspectAbort: AbortController | undefined
   private request: InstallRequest | undefined
+  private updateAbort: AbortController | undefined
+  private updates: BundleUpdate[] = []
   private noticeSeq = 0
   private analyticsAttempt: { input: string; started: number } | undefined
   private registryRead: RegistryRead | undefined
@@ -592,6 +604,7 @@ export class PluginManagerController {
   /** Stop publishing and drop every late settlement. */
   dispose(): void {
     this.disposed = true
+    this.updateAbort?.abort()
     this.registryRead = undefined
     this.request = undefined
     this.generation += 1
@@ -611,8 +624,9 @@ export class PluginManagerController {
       resolveText,
       hooks: { pluginManager: this.store, configLedger, pluginTabs, configurations: this.ctx.configForms.describe() },
       configForm: id => this.ctx.configForms.get(id),
-      ensure: () => { if (this.getSnapshot().status === 'idle') void this.load() },
+      ensure: () => { if (this.getSnapshot().status === 'idle') void this.load().then(() => this.checkUpdates()) },
       refresh: () => { void this.refresh() },
+      checkUpdates: () => { void this.checkUpdates() },
       openInstall: () => {
         this.ctx.get('productAnalytics')?.track('plugin_add_button_click', {})
         this.openDialog()
@@ -687,6 +701,18 @@ export class PluginManagerController {
       },
       update: (packageName) => {
         const pkg = this.getSnapshot().packages.find(pkg => pkg.name === packageName)
+        if (pkg?.update?.status === 'available' && pkg.update.target !== undefined) {
+          const target = pkg.update.target
+          if (!this.openDialog()) return
+          const subject: InstallSubject = { status: 'accepted', kind: 'registry', name: pkg.name, version: target.version,
+            bundle: true, registry: target.registry, spec: target.spec, selection: pkg.enabled, saveExact: true, updateName: pkg.name }
+          this.transientRegistry = true
+          this.patchInstall({ subject, spec: target.spec,
+            registry: target.registry === null ? { kind: 'offered', registry: null } : { kind: 'custom', url: target.registry },
+          })
+          void this.startInstall(subject)
+          return
+        }
         const target = pkg?.installTarget
         if (pkg === undefined || target === undefined || pkg.availability === 'installation') return
         if (!pkg.installed) {
@@ -894,11 +920,40 @@ export class PluginManagerController {
         this.patch({
           status: 'ready',
           refreshStatus: this.getSnapshot().refreshStatus === 'refreshing' ? 'refreshing' : 'idle',
-          packages: sortPackages(bundles.value.map(bundle => packageView(bundle, plugins.value))),
+          packages: sortPackages(bundles.value.map((bundle) => {
+            const update = this.updates.find(item => item.name === bundle.name && item.installedVersion === bundle.version)
+            const pkg = packageView(bundle, plugins.value)
+            return update === undefined ? pkg : { ...pkg, update }
+          })),
         })
       } while (this.shouldRerun())
     } finally {
       this.inFlight = undefined
+    }
+  }
+
+  private async checkUpdates(): Promise<void> {
+    if (this.disposed || this.updateAbort !== undefined || this.getSnapshot().status !== 'ready') return
+    const controller = new AbortController()
+    this.updateAbort = controller
+    this.patch({ updateStatus: 'checking' })
+    try {
+      const result = await this.ctx.remote.pluginManager.checkUpdates(controller.signal)
+      if (this.gone(controller.signal)) return
+      if (!result.ok) {
+        this.patch({ updateStatus: 'failed' })
+        return
+      }
+      this.updates = result.value
+      this.patch({ updateStatus: 'done', packages: this.getSnapshot().packages.map((pkg) => {
+        const update = this.updates.find(item => item.name === pkg.name && item.installedVersion === pkg.version)
+        const { update: _previous, ...current } = pkg
+        return update === undefined ? current : { ...current, update }
+      }) })
+    } catch (_error) {
+      if (!controller.signal.aborted) this.patch({ updateStatus: 'failed' })
+    } finally {
+      if (this.updateAbort === controller) this.updateAbort = undefined
     }
   }
 
@@ -1028,11 +1083,14 @@ export class PluginManagerController {
     // The Host announces `plugin-manager/changed` while the run is still on
     // the wire, and every such event reads again; those reads must not cancel
     // the run's settlement.
-    const result = await this.ctx.remote.pluginManager.installBundle(spec, {
+    const options = {
       enabled: subject.selection ?? false, requestId, registry,
       ...subject.saveExact === undefined ? {} : { saveExact: subject.saveExact },
       ...approvedBuilds === undefined ? {} : { approvedBuilds: [...approvedBuilds] },
-    })
+    }
+    const result = subject.updateName === undefined
+      ? await this.ctx.remote.pluginManager.installBundle(spec, options)
+      : await this.ctx.remote.pluginManager.updateBundle(subject.updateName, subject.version, options)
     if (this.disposed || this.request !== request) return
     if (!result.ok) {
       request.replyLost = true
@@ -1078,7 +1136,11 @@ export class PluginManagerController {
       this.offerSpecAgain({ kind: 'cancelled', seq: ++this.noticeSeq })
     } else if (result.application === 'failed') {
       const packages = result.packageResult
+      const subject = this.getSnapshot().install.subject
+      const retrySubject = subject?.updateName !== undefined && result.changed && result.stage === 'install' && result.bundle === undefined
+        ? (({ updateName: _updateName, ...rest }) => rest)(subject) : subject
       this.patchInstall({
+        subject: retrySubject,
         phase: 'failed', runs: settledRuns(runs, packages?.exitCode ?? null),
         failure: failureOf(result.error, packages?.kind, result.pendingBuilds, result.failedAt),
         ...asked,

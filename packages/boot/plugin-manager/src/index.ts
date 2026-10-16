@@ -1,4 +1,5 @@
 /** Current-profile plugin and bundle management over shared dsh plugin operations. */
+import semver from 'semver'
 import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { readFile, rm } from 'node:fs/promises'
@@ -30,7 +31,7 @@ import { incompatiblePlugin, ManagementFailure } from './failure.ts'
 import { approveBuilds, recordPendingBuilds } from './build-approval.ts'
 import { checkGithubConnection } from './github-connection.ts'
 import type {
-  BundleInfo, BundleRowInfo, ChangeResult, InspectOptions, InstallBundleOptions, ManagementError, PackageResult, PluginChange,
+  BundleUpdate, BundleInfo, BundleRowInfo, ChangeResult, InspectOptions, InstallBundleOptions, ManagementError, PackageResult, PluginChange,
   PluginEntryId, PluginInfo, PluginInspectProblem, PluginInstallCancellation, PluginInstallProgress, PluginInstallRequestId,
   PluginRegistries, PluginSpecInspection, Registry,
 } from './types.ts'
@@ -406,6 +407,20 @@ export class PluginManager extends TypertRemoteService {
    */
   @Remote
   async inspect(spec: string, options?: InspectOptions, signal?: AbortSignal): Promise<PluginSpecInspection> {
+    const manifest = readProfileManifest('dsh', this.profile.dir)
+    const installation = JSON.parse(readFileSync(this.profile.installAnchor, 'utf8')) as InstallationManifest
+    const known = new Set([
+      ...bundleSelection(manifest), ...Object.keys(manifest.dependencies ?? {}), ...Object.keys(installation.dependencies ?? {}),
+    ])
+    const parsed = parsedForRegistry(spec)
+    if (parsed.kind === 'registry' || parsed.kind === 'path') {
+      const name = specPackageName(spec, manifest.dependencies ?? {}, this.profile.dir)
+      if (name !== undefined && known.has(name)) return refused('already-installed', `${name} is already installed`)
+    }
+    return this.inspectSpec(spec, options, signal)
+  }
+
+  private async inspectSpec(spec: string, options?: InspectOptions, signal?: AbortSignal): Promise<PluginSpecInspection> {
     let parsed
     try {
       parsed = parseInstallSpec(spec)
@@ -414,11 +429,6 @@ export class PluginManager extends TypertRemoteService {
       if (!(error instanceof InvalidInstallSpecError)) throw error
       return refused('invalid-spec', error.reason)
     }
-    const manifest = readProfileManifest('dsh', this.profile.dir)
-    const installation = JSON.parse(readFileSync(this.profile.installAnchor, 'utf8')) as InstallationManifest
-    const known = new Set([
-      ...bundleSelection(manifest), ...Object.keys(manifest.dependencies ?? {}), ...Object.keys(installation.dependencies ?? {}),
-    ])
     const plan = registryPlan(options?.registry, await this.registries())
     const registry = plan[0] as Registry
     switch (parsed.kind) {
@@ -436,12 +446,10 @@ export class PluginManager extends TypertRemoteService {
         }
         const inspection = inspectionOf('path', read, registry)
         if (inspection.name === undefined) return refused('not-a-package', 'the package.json names no package')
-        if (known.has(inspection.name)) return refused('already-installed', `${inspection.name} is already installed`)
         if (!inspection.bundle) return refused('not-a-bundle', `${inspection.name} declares no dsh.bundle`)
         return inspection
       }
       case 'registry': {
-        if (known.has(parsed.name)) return refused('already-installed', `${parsed.name} is already installed`)
         const registries: Registry[] = []
         const refusedBy = (problem: PluginInspectProblem, reason: string): PluginSpecInspection =>
           ({ status: 'refused', problem, reason, registries })
@@ -475,12 +483,86 @@ export class PluginManager extends TypertRemoteService {
           const inspection = inspectionOf('registry', latest, current)
           const named = inspection.name === undefined ? { ...inspection, name: parsed.name } : inspection
           if (!named.bundle) return refusedBy('not-a-bundle', `${named.name} declares no dsh.bundle`)
-          return named
+          const compatibility = evaluatePluginCompatibility(latest, readProfileVersionExemptions(this.profile.dir))
+          return compatibility === undefined || compatibility.exempted
+            ? named : { ...named, incompatible: [incompatiblePlugin(compatibility)] }
         }
         /* v8 ignore next -- the plan is never empty: every attempt returns or continues to the next */
         throw new Error('no registry was asked')
       }
     }
+  }
+
+  /** Check latest registry releases for installed plugins without changing the profile.
+   * @param signal Cancels lookups when the requesting page closes.
+   * @returns One result per profile-installed bundle; local, Git, aliases and installation-owned packages are unsupported.
+   */
+  @Remote
+  async checkUpdates(signal?: AbortSignal): Promise<BundleUpdate[]> {
+    const updates: BundleUpdate[] = []
+    for (const bundle of await this.listBundles()) {
+      if (!bundle.installed) continue
+      const base = { name: bundle.name, ...bundle.version === undefined ? {} : { installedVersion: bundle.version } }
+      const parsed = bundle.source === undefined ? undefined : parsedForRegistry(bundle.source)
+      const installedVersion = semver.valid(bundle.version)
+      if (!bundle.removable || bundle.availability !== 'profile' || parsed?.kind !== 'registry'
+        || parsed.name !== bundle.name || parsed.range?.startsWith('npm:') === true || installedVersion === null) {
+        updates.push({ ...base, status: 'unsupported' })
+        continue
+      }
+      try {
+        const inspected = await this.inspectSpec(`${bundle.name}@latest`, undefined, signal)
+        const version = inspected.status === 'accepted' ? semver.valid(inspected.version) : null
+        if (inspected.status !== 'accepted' || inspected.name !== bundle.name || version === null) {
+          updates.push({ ...base, status: 'failed', error: { code: 'operation-error', diagnostic: inspected.status === 'refused' ? inspected.reason : 'Registry returned an invalid plugin version' } })
+        } else if (inspected.incompatible !== undefined) {
+          updates.push({ ...base, status: 'incompatible', error: { code: 'incompatible-version', incompatible: inspected.incompatible } })
+        } else if (semver.gt(version, installedVersion)) {
+          updates.push({ ...base, status: 'available', target: { spec: `${bundle.name}@${version}`, version, registry: inspected.registry } })
+        } else {
+          updates.push({ ...base, status: 'current' })
+        }
+      } catch (error) {
+        signal?.throwIfAborted()
+        updates.push({ ...base, status: 'failed', error: managementError(error) })
+      }
+    }
+    return updates
+  }
+
+  /** Replace a profile plugin and await disposal and activation through HMR under one profile write lock.
+   * @param name Installed bundle name.
+   * @param version Exact registry version selected by the update check; the installed version can be retried, and downgrades are refused.
+   * @param options Installation registry, progress id and script approvals.
+   * @returns Applied after activation settles. Failure after removal leaves the bundle uninstalled or inactive; no rollback is promised.
+   */
+  @Remote
+  async updateBundle(name: string, version: string, options?: InstallBundleOptions): Promise<ChangeResult> {
+    const requestId = options?.requestId
+    const control: InstallControl = { abort: new AbortController(), phase: 'applying', result: Promise.resolve(null) }
+    if (requestId !== undefined) this.installs.set(requestId, control)
+    const result = withFileLock(join(this.profile.dir, 'package.json'), async () => {
+      const failure = (error: ManagementError): ChangeResult => ({ changed: false, application: 'failed', stage: 'install', target: name, error })
+      const bundle = (await this.listBundles()).find(item => item.name === name)
+      if (bundle === undefined || !bundle.installed || !bundle.removable || bundle.availability !== 'profile') return failure({ code: 'not-removable' })
+      const source = bundle.source === undefined ? undefined : parsedForRegistry(bundle.source)
+      const installedVersion = semver.valid(bundle.version)
+      if (source?.kind !== 'registry' || source.name !== name || source.range?.startsWith('npm:') === true
+        || semver.valid(version) === null || installedVersion === null || !semver.gte(version, installedVersion)) return failure({ code: 'invalid-spec' })
+      if (this.ownerContext.get('hmr') === undefined) return failure({ code: 'stop-profile' })
+      let inspected: PluginSpecInspection
+      try { inspected = await this.inspectSpec(`${name}@${version}`, options, this.abort.signal) }
+      catch (error) { return failure(managementError(error)) }
+      if (inspected.status !== 'accepted' || inspected.name !== name || inspected.version !== version) return failure({ code: 'operation-error', diagnostic: inspected.status === 'refused' ? inspected.reason : 'Registry returned a different version' })
+      if (inspected.incompatible !== undefined) return failure({ code: 'incompatible-version', incompatible: inspected.incompatible })
+      const order = bundleSelection(readProfileManifest('dsh', this.profile.dir))
+      const removed = await this.change(result => this.removeFiles(name, result), { stage: 'remove', target: name }, 'remove', true)
+      if (removed.application !== 'applied') return removed
+      const installed = await this.install(`${name}@${version}`, { ...options, registry: inspected.registry, enabled: bundle.enabled, saveExact: true }, control, true, order)
+      return { ...installed, changed: removed.changed || installed.changed }
+    }, { waitMs: this.lockWaitMs })
+    control.result = result
+    return result.finally(() => { if (requestId !== undefined) this.installs.delete(requestId) })
   }
 
   /** Persist a plugin entry's desired enablement and apply it on live profiles.
@@ -529,8 +611,17 @@ export class PluginManager extends TypertRemoteService {
   installBundle(spec: string, options?: InstallBundleOptions): Promise<ChangeResult> {
     const requestId = options?.requestId
     const control: InstallControl = { abort: new AbortController(), phase: 'installing', result: Promise.resolve(null) }
-    const stopped = (): boolean => control.abort.signal.aborted || this.abort.signal.aborted
     if (requestId !== undefined) this.installs.set(requestId, control)
+    const result = this.install(spec, options, control)
+    control.result = result
+    return result.finally(() => { if (requestId !== undefined) this.installs.delete(requestId) })
+  }
+
+  private install(
+    spec: string, options: InstallBundleOptions | undefined, control: InstallControl, locked = false, order?: readonly string[],
+  ): Promise<ChangeResult> {
+    const requestId = options?.requestId
+    const stopped = (): boolean => control.abort.signal.aborted || this.abort.signal.aborted
     const announce = (phase: PluginInstallProgress['phase'], attempt?: PluginInstallProgress['attempt']): void => {
       if (requestId !== undefined) this.ownerContext.emit('plugin-manager/install-state', { requestId, phase, ...attempt === undefined ? {} : { attempt } })
     }
@@ -639,15 +730,20 @@ export class PluginManager extends TypertRemoteService {
       result.stage = 'enable'
       return this.configure(async () => {
         if (options?.enabled !== false) await this.selectBundle(name, true)
+        if (order !== undefined) {
+          const manifest = readProfileManifest('dsh', this.profile.dir)
+          const selected = bundleSelection(manifest)
+          const bundles = [...order.filter(item => selected.includes(item)), ...selected.filter(item => !order.includes(item))]
+          await saveManifest(this.profile.dir, { ...manifest, dsh: { ...manifest.dsh, profile: { ...manifest.dsh?.profile, bundles } } })
+        }
         // Without HMR the replaced package's plugins keep running until the restart the result already reports.
         if (Object.hasOwn(before, name) && this.ownerContext.get('hmr') === undefined) return
         // A selected bundle's own rows must start.
         const selected = bundleSelection(readProfileManifest('dsh', this.profile.dir)).includes(name)
         Object.assign(result, await this.publishAndReload(selected ? this.bundleRows(name).map(row => row.id) : []))
       })
-    }, { stage: 'install', target: spec, enabled: options?.enabled !== false }, 'install')
-    control.result = result
-    return result.finally(() => { if (requestId !== undefined) this.installs.delete(requestId) })
+    }, { stage: 'install', target: spec, enabled: options?.enabled !== false }, 'install', locked)
+    return result
   }
 
   /** Recover the result of an active installation without cancelling it.
@@ -684,37 +780,39 @@ export class PluginManager extends TypertRemoteService {
    */
   @Remote
   removeBundle(name: string): Promise<ChangeResult> {
-    return this.change(async (result) => {
-      const installed = await this.configure(async () => {
-        const bundle = (await this.listBundles()).find(item => item.name === name)
-        if (bundle === undefined || !bundle.removable) throw new ManagementFailure('not-removable')
-        if (this.ownerContext.get('hmr') === undefined && (this.profile.startedBundles.includes(name)
-          || (bundle.error === undefined && this.bundleRows(name).some(row => [...this.ctx.loader.entries()]
-            .some(entry => entry.options.id === row.id && entry.fiber !== undefined))))) {
-          throw new ManagementFailure('stop-profile')
-        }
-        const contributions = bundle.error === undefined ? this.bundleRows(name) : []
-        if (bundle.enabled) {
-          await this.selectBundle(name, false)
-          Object.assign(result, await this.reload())
-        }
-        if ([...this.ctx.loader.entries()].some(entry => entry.fiber?.uid != null
-          && contributions.some(row => row.id === entry.options.id && row.name === entry.options.name))) {
-          throw new ManagementFailure('bundle-in-use')
-        }
-        return bundle.installed
-      })
-      if (!installed) return
-      // `pnpm remove` takes no `--registry` option; the generic configuration flag sets the same setting. A package
-      // installed before this process started is removed with the registry an installation asks first.
-      const registry = this.installedFrom.has(name) ? this.installedFrom.get(name) : this.configuredRegistries.registry
-      result.packageResult = await this.runPnpm(['remove', name, ...typeof registry === 'string' ? [`--config.registry=${registry}`] : []])
-      if (result.packageResult.exitCode !== 0 || result.packageResult.timedOut === true) {
-        throw new Error(result.packageResult.output)
+    return this.change(result => this.removeFiles(name, result), { stage: 'remove', target: name }, 'remove')
+  }
+
+  private async removeFiles(name: string, result: ChangeResult): Promise<void> {
+    const installed = await this.configure(async () => {
+      const bundle = (await this.listBundles()).find(item => item.name === name)
+      if (bundle === undefined || !bundle.removable) throw new ManagementFailure('not-removable')
+      if (this.ownerContext.get('hmr') === undefined && (this.profile.startedBundles.includes(name)
+        || (bundle.error === undefined && this.bundleRows(name).some(row => [...this.ctx.loader.entries()]
+          .some(entry => entry.options.id === row.id && entry.fiber !== undefined))))) {
+        throw new ManagementFailure('stop-profile')
       }
-      this.installedFrom.delete(name)
-      Object.assign(result, await this.configure(() => this.publishAndReload()))
-    }, { stage: 'remove', target: name }, 'remove')
+      const contributions = bundle.error === undefined ? this.bundleRows(name) : []
+      if (bundle.enabled) {
+        await this.selectBundle(name, false)
+        Object.assign(result, await this.reload())
+      }
+      if ([...this.ctx.loader.entries()].some(entry => entry.fiber?.uid != null
+        && contributions.some(row => row.id === entry.options.id && row.name === entry.options.name))) {
+        throw new ManagementFailure('bundle-in-use')
+      }
+      return bundle.installed
+    })
+    if (!installed) return
+    // `pnpm remove` takes no `--registry` option; the generic configuration flag sets the same setting. A package
+    // installed before this process started is removed with the registry an installation asks first.
+    const registry = this.installedFrom.has(name) ? this.installedFrom.get(name) : this.configuredRegistries.registry
+    result.packageResult = await this.runPnpm(['remove', name, ...typeof registry === 'string' ? [`--config.registry=${registry}`] : []])
+    if (result.packageResult.exitCode !== 0 || result.packageResult.timedOut === true) {
+      throw new Error(result.packageResult.output)
+    }
+    this.installedFrom.delete(name)
+    Object.assign(result, await this.configure(() => this.publishAndReload()))
   }
 
   /** The rows a bundle's patch inserts and the existing rows it changes; an unreadable patch throws. */
@@ -899,8 +997,9 @@ export class PluginManager extends TypertRemoteService {
     operation: (result: ChangeResult) => Promise<ChangeResult['application'] | void>,
     request: Pick<ChangeResult, 'stage' | 'target' | 'enabled'>,
     reason: PluginChange['reason'],
+    locked = false,
   ): Promise<ChangeResult> {
-    return withFileLock(join(this.profile.dir, 'package.json'), async () => {
+    const apply = async (): Promise<ChangeResult> => {
       this.abort.signal.throwIfAborted()
       const before = this.diskState()
       const result: ChangeResult = { ...request, changed: false,
@@ -922,7 +1021,8 @@ export class PluginManager extends TypertRemoteService {
       result.changed = before !== this.diskState()
       this.ownerContext.emit('plugin-manager/changed', { reason })
       return result
-    }, { waitMs: this.lockWaitMs })
+    }
+    return locked ? apply() : withFileLock(join(this.profile.dir, 'package.json'), apply, { waitMs: this.lockWaitMs })
   }
 
   private diskState(): string {
