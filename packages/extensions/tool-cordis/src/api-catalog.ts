@@ -1739,6 +1739,18 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'The package the spec names, or why it is refused.',
       },
       {
+        signature: '@Remote async checkUpdates(signal?: AbortSignal): Promise<BundleUpdate[]>',
+        description: 'Check latest registry releases for installed plugins without changing the profile.',
+        parameters: [{ name: 'signal', description: 'Cancels lookups when the requesting page closes.' }],
+        returns: 'One result per profile-installed bundle; local, Git, aliases and installation-owned packages are unsupported.',
+      },
+      {
+        signature: '@Remote async updateBundle(name: string, version: string, options?: InstallBundleOptions): Promise<ChangeResult>',
+        description: 'Replace a profile plugin and await disposal and activation through HMR under one profile write lock.',
+        parameters: [{ name: 'name', description: 'Installed bundle name.' }, { name: 'version', description: 'Exact registry version selected by the update check; the installed version can be retried, and downgrades are refused.' }, { name: 'options', description: 'Installation registry, progress id and script approvals.' }],
+        returns: 'Applied after activation settles. Failure after removal leaves the bundle uninstalled or inactive; no rollback is promised.',
+      },
+      {
         signature: '@Remote setPluginEnabled(id: PluginEntryId, enabled: boolean): Promise<ChangeResult>',
         description: 'Persist a plugin entry\'s desired enablement and apply it on live profiles.',
         parameters: [{ name: 'id', description: 'Loader entry identity returned by listPlugins.' }, { name: 'enabled', description: 'Whether the plugin should run.' }],
@@ -4986,6 +4998,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface BundleRowInfo {\n    rowId: string;\n    moduleName: string;\n    meta?: PluginLocalizedMeta;\n    entryId?: PluginEntryId;\n}',
   },
   {
+    name: 'BundleUpdate',
+    declaration: 'export interface BundleUpdate {\n    name: string;\n    installedVersion?: string;\n    status: \'available\' | \'current\' | \'unsupported\' | \'failed\' | \'incompatible\';\n    target?: {\n        spec: string;\n        version: string;\n        registry: Registry;\n    };\n    error?: ManagementError;\n}',
+  },
+  {
     name: 'ButtonProps',
     declaration: 'export interface ButtonProps {\n    readonly label: string;\n    readonly hotkey?: string | undefined;\n    readonly disabled?: boolean | undefined;\n    readonly onPress?: (() => unknown) | undefined;\n}',
   },
@@ -6443,7 +6459,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'PluginSpecInspection',
-    declaration: 'export type PluginSpecInspection = {\n    readonly status: \'accepted\';\n    readonly kind: InstallSpecKind;\n    readonly name?: string;\n    readonly version?: string;\n    readonly description?: string;\n    readonly bundle: boolean | null;\n    readonly registry: Registry;\n    readonly host?: string;\n} | {\n    readonly status: \'refused\';\n    readonly problem: PluginInspectProblem;\n    readonly reason: string;\n    readonly registries?: Registry[];\n};',
+    declaration: 'export type PluginSpecInspection = {\n    readonly status: \'accepted\';\n    readonly kind: InstallSpecKind;\n    readonly name?: string;\n    readonly version?: string;\n    readonly description?: string;\n    readonly incompatible?: IncompatiblePlugin[];\n    readonly bundle: boolean | null;\n    readonly registry: Registry;\n    readonly host?: string;\n} | {\n    readonly status: \'refused\';\n    readonly problem: PluginInspectProblem;\n    readonly reason: string;\n    readonly registries?: Registry[];\n};',
   },
   {
     name: 'PostToolDecision',

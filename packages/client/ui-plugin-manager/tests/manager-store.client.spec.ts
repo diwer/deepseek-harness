@@ -80,6 +80,8 @@ const NO_TABS: HostObservable<readonly PluginTab[]> = { getSnapshot: () => [], s
 function bench(overrides: Partial<Record<string, ReturnType<typeof vi.fn>>> = {}, enabled = true) {
   const inventory = { list: overrides.inventory ?? vi.fn(() => Promise.resolve(ok({ entries: [], managementAvailable: true }))) }
   const plugins = {
+    checkUpdates: vi.fn(() => Promise.resolve(ok([]))),
+    updateBundle: vi.fn(() => Promise.resolve(ok({ ...APPLIED, bundle: BUNDLE.name, version: '1.0.0' }))),
     listBundles: vi.fn<() => Promise<ReturnType<typeof ok<BundleInfo[]>> | ReturnType<typeof refused>>>(
       () => Promise.resolve(ok([BUNDLE])),
     ),
@@ -2047,4 +2049,50 @@ it('deselects a source bundle whose target is unavailable without starting insta
   face.setEnabled(entry.name, false)
   await vi.waitFor(() => { expect(plugins.setBundleEnabled).toHaveBeenCalledWith(entry.name, false) })
   expect(plugins.installBundle).not.toHaveBeenCalled()
+})
+
+
+it('checks installed plugins and sends an exact version through the Host update transaction', async () => {
+  const update = { name: BUNDLE.name, installedVersion: BUNDLE.version, status: 'available',
+    target: { spec: `${BUNDLE.name}@1.0.0`, version: '1.0.0', registry: CORP } }
+  const { controller, face, state, plugins } = bench({ checkUpdates: vi.fn(() => Promise.resolve(ok([update]))) })
+  await controller.load()
+  face.checkUpdates()
+  await vi.waitFor(() => { expect(state().updateStatus).toBe('done') })
+  expect(state().packages[0]?.update).toEqual(update)
+  face.update(BUNDLE.name)
+  await vi.waitFor(() => { expect(state().install.phase).toBe('done') })
+  expect(plugins.updateBundle).toHaveBeenCalledWith(BUNDLE.name, '1.0.0', expect.objectContaining({ registry: CORP, saveExact: true }))
+  expect(plugins.removeBundle).not.toHaveBeenCalled()
+  expect(plugins.installBundle).not.toHaveBeenCalled()
+})
+
+it('retains inventory when checking updates fails, and allows retry', async () => {
+  const checkUpdates = vi.fn().mockResolvedValueOnce(refused('offline', 'offline')).mockResolvedValueOnce(ok([]))
+  const { controller, face, state } = bench({ checkUpdates })
+  await controller.load()
+  face.checkUpdates()
+  await vi.waitFor(() => { expect(state().updateStatus).toBe('failed') })
+  expect(state().packages).toHaveLength(1)
+  face.checkUpdates()
+  await vi.waitFor(() => { expect(state().updateStatus).toBe('done') })
+})
+
+it('retries installation after an update removed the old package but could not download the replacement', async () => {
+  const update = { name: BUNDLE.name, installedVersion: BUNDLE.version, status: 'available',
+    target: { spec: `${BUNDLE.name}@1.0.0`, version: '1.0.0', registry: CORP } }
+  const { controller, face, state, plugins } = bench({
+    checkUpdates: vi.fn(() => Promise.resolve(ok([update]))),
+    updateBundle: vi.fn(() => Promise.resolve(ok({ ...failed({ code: 'operation-error', diagnostic: 'download failed' }),
+      changed: true, stage: 'install' }))),
+  })
+  await controller.load()
+  face.checkUpdates()
+  await vi.waitFor(() => { expect(state().updateStatus).toBe('done') })
+  face.update(BUNDLE.name)
+  await vi.waitFor(() => { expect(state().install.phase).toBe('failed') })
+  face.runInstall()
+  await vi.waitFor(() => { expect(state().install.phase).toBe('done') })
+  expect(plugins.updateBundle).toHaveBeenCalledOnce()
+  expect(plugins.installBundle).toHaveBeenCalledWith(`${BUNDLE.name}@1.0.0`, expect.objectContaining({ registry: CORP }))
 })

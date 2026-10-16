@@ -304,6 +304,7 @@ export const LINK_MAP: Readonly<Record<string, string>> = {
   ProfileReconciliation: 'boot.md',
   PluginInfo: 'boot.md',
   BundleInfo: 'boot.md',
+  BundleUpdate: 'boot.md',
   MarketIndexSummary: 'boot.md',
   MarketListingEntry: 'boot.md',
   MarketQuery: 'boot.md',
