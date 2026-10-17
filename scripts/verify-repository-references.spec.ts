@@ -97,6 +97,73 @@ describe('maintained repository reference policy', () => {
     expect(scanRepositoryReferences(fixture.root)).toHaveLength(4)
   })
 
+  it('accepts TOML numeric values while inspecting strings, keys, and comments', () => {
+    const decimal = String(12_345_678_901_234)
+    const commits = new Set([decimal])
+    for (const file of ['project.toml', 'python/sdk/uv.lock', 'uv.lock']) {
+      const source = [
+        `size = ${decimal}`,
+        `values = [${decimal}, +${decimal}, -${decimal}, ${decimal}.0]`,
+        `wheel = { name = "🐳", size = ${decimal}, url = "https://example.invalid/file.whl" }`,
+        `revision = "${decimal}"`,
+        `literal = '${decimal}'`,
+        'multiline = """',
+        `size = ${decimal}`,
+        '"""',
+        `${decimal} = 1`,
+        '[nested]',
+        `"${decimal}" = 2`,
+        `# size = ${decimal}`,
+        `other = 1 # ${decimal}`,
+      ].join('\n')
+      expect(findRepositoryReferences(file, source, commits)).toEqual(
+        [4, 5, 7, 9, 11, 12, 13].map(line => ({ file, line, kind: 'commit-hash' })),
+      )
+    }
+    expect(findRepositoryReferences('guide.md', decimal, commits))
+      .toEqual([{ file: 'guide.md', line: 1, kind: 'commit-hash' }])
+  })
+
+  it('still rejects organization URLs next to TOML numeric values', () => {
+    const source = `wheel = { size = 12_345_678, url = "${organizationUrl}/project" }`
+    expect(findRepositoryReferences('uv.lock', source, new Set()))
+      .toEqual([{ file: 'uv.lock', line: 1, kind: 'organization-url' }])
+  })
+
+  it('reports TOML references in source order with organization URLs first on a shared line', () => {
+    const commit = 'a'.repeat(12)
+    const source = `revision = "${commit}"\n# ${organizationUrl}/project ${commit}`
+    expect(findRepositoryReferences('project.toml', source, new Set([commit]))).toEqual([
+      { file: 'project.toml', line: 1, kind: 'commit-hash' },
+      { file: 'project.toml', line: 2, kind: 'organization-url' },
+      { file: 'project.toml', line: 2, kind: 'commit-hash' },
+    ])
+  })
+
+  it('fails visibly when a maintained TOML file cannot be parsed', () => {
+    expect(() => findRepositoryReferences('uv.lock', 'size = [', new Set()))
+      .toThrow('repository references: uv.lock: invalid TOML; fix its syntax before scanning')
+  })
+
+  it('scans numeric lockfile metadata and textual references against real decimal commit prefixes', (test) => {
+    const fixture = repository(test)
+    const algorithm = fixture.tree.length === 64 ? 'sha256' : 'sha1'
+    let body = ''
+    let prefix = ''
+    for (let index = 0; !/^[1-9]\d{6}$/.test(prefix); index += 1) {
+      body = `tree ${fixture.tree}\nauthor T <t@example.invalid> 0 +0000\ncommitter T <t@example.invalid> 0 +0000\n\ndecimal ${String(index)}\n`
+      prefix = createHash(algorithm).update(`commit ${String(Buffer.byteLength(body))}\0${body}`).digest('hex').slice(0, 7)
+    }
+    const commit = fixture.git(['hash-object', '-t', 'commit', '-w', '--stdin'], body)
+    expect(commit.startsWith(prefix)).toBe(true)
+    fixture.write('python/sdk/uv.lock', `wheels = [{ size = ${prefix} }]\n`)
+    expect(scanRepositoryReferences(fixture.root)).toEqual([])
+    fixture.write('python/sdk/uv.lock', `wheels = [{ size = ${prefix} }]\nrevision = "${prefix}"\n`)
+    expect(scanRepositoryReferences(fixture.root)).toEqual([
+      { file: 'python/sdk/uv.lock', line: 2, kind: 'commit-hash' },
+    ])
+  })
+
   it('checks available unreachable commits without requiring a branch or network', (test) => {
     const fixture = repository(test)
     const unreachable = fixture.git(['commit-tree', fixture.tree, '-m', 'unreachable fixture'])
@@ -179,9 +246,11 @@ describe('maintained repository reference policy', () => {
   it.skipIf(process.platform === 'win32')('inspects dangling symlink targets without following files outside the tree', (test) => {
     const fixture = repository(test)
     symlinkSync(`../${fixture.commit}`, join(fixture.root, 'reference-link'))
+    symlinkSync(`../${fixture.commit}`, join(fixture.root, 'reference.toml'))
     symlinkSync('../outside', join(fixture.root, 'ordinary-link'))
     expect(scanRepositoryReferences(fixture.root)).toEqual([
       { file: 'reference-link', line: 1, kind: 'commit-hash' },
+      { file: 'reference.toml', line: 1, kind: 'commit-hash' },
     ])
   })
 
