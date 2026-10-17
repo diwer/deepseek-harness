@@ -1,0 +1,12 @@
+[
+  {
+    "title": "Check for Updates",
+    "message": "Automatic updates are unavailable for this build",
+    "detail": "To update, install a newer local application package."
+  },
+  {
+    "title": "检查更新",
+    "message": "此版本不支持自动更新",
+    "detail": "如需更新，请安装新的本地应用包"
+  }
+]

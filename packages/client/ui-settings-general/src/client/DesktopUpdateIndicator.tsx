@@ -13,6 +13,7 @@ const BUSY_PHASES: ReadonlySet<DesktopUpdatePresentation['phase']> = new Set([
 
 function updateCopy(state: DesktopUpdatePresentation, t: SettingsTranslate): { label: string; detail: string } {
   const labels: Readonly<Record<DesktopUpdatePresentation['phase'], string>> = {
+    unavailable: '',
     idle: '',
     checking: t('desktop.update.checking'),
     available: t('desktop.update.available'),
@@ -61,7 +62,7 @@ export function DesktopUpdateIndicator({ wide, hidden, t, view, onOpen }: {
   onOpen: () => void
 }) {
   const { presentation: state, failed, opening } = view
-  if (!wide || hidden || (!failed && (state === undefined || state.phase === 'idle'))) return null
+  if (!wide || hidden || (!failed && (state === undefined || state.phase === 'idle' || state.phase === 'unavailable'))) return null
   const retryLabel = t('desktop.update.retry')
   const copy = state === undefined ? { label: retryLabel, detail: retryLabel } : updateCopy(state, t)
   const label = failed ? retryLabel : copy.label
@@ -90,7 +91,7 @@ export function DesktopUpdateBadge({ useDesktopUpdate, useConnectionState, t }: 
   const { presentation: state, failed } = useDesktopUpdate(value => value)
   const connection = useConnectionState(value => value)
   if (((connection === 'disconnected' || connection === 'connecting') && state?.phase !== 'installing')
-    || (!failed && (state === undefined || state.phase === 'idle'))) return null
+    || (!failed && (state === undefined || state.phase === 'idle' || state.phase === 'unavailable'))) return null
   const retryLabel = t('desktop.update.retry')
   const copy = state === undefined ? { label: retryLabel, detail: retryLabel } : updateCopy(state, t)
   const label = failed ? retryLabel : copy.label

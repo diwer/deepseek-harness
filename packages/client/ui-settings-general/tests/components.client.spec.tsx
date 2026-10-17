@@ -55,6 +55,9 @@ describe('Desktop collapsed update badge', () => {
     }
     const view = render(<DesktopUpdateBadge {...props} />)
     expect(screen.queryByRole('img')).toBeNull()
+    state = { ...state, presentation: { phase: 'unavailable' } }
+    view.rerender(<DesktopUpdateBadge {...props} />)
+    expect(screen.queryByRole('img')).toBeNull()
     state = { ...state, presentation: { phase: 'available', version: '1.0.1' } }
     view.rerender(<DesktopUpdateBadge {...props} />)
     expect(screen.getByRole('img', { name: 'Update' })).toBeTruthy()

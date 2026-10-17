@@ -817,7 +817,7 @@ async function main(): Promise<void> {
       let progress: Promise<unknown> | undefined
       try {
         let state = updates.state
-        if (manual || state.phase === 'idle' || (state.phase === 'error' && state.failedOperation === 'check')) {
+        if (state.phase !== 'unavailable' && (manual || state.phase === 'idle' || (state.phase === 'error' && state.failedOperation === 'check'))) {
           controller = new AbortController()
           ordinaryDialogs.add(controller)
           const parent = currentDialogWindow()
@@ -829,6 +829,11 @@ async function main(): Promise<void> {
           state = await updateSchedule.check(true)
         }
         if (isMandatory()) { mandatoryUI?.focus(); return }
+        if (state.phase === 'unavailable') {
+          await ordinaryMessageBox({ type: 'info', title: locale.messages.updateCheckTitle,
+            message: locale.messages.updateUnavailable, detail: locale.messages.updateUnavailableDetail })
+          return
+        }
         if (state.phase === 'error' && state.failedOperation === 'check') { await showUpdateFailure(state); return }
         if (state.phase === 'idle') {
           await ordinaryMessageBox({ type: 'info', title: locale.messages.updateCheckTitle,

@@ -10,7 +10,7 @@ it('keeps the Electron preload assignable to the product consumer', () => {
 })
 
 it('records visible ordinary-update states without authorizing downloads or installation', async () => {
-  const phases: DesktopUpdateState['phase'][] = ['idle', 'available', 'downloading', 'verifying', 'ready', 'installing', 'error']
+  const phases: DesktopUpdateState['phase'][] = ['unavailable', 'idle', 'available', 'downloading', 'verifying', 'ready', 'installing', 'error']
   const states = phases.map(phase => presentDesktopUpdate({ phase, version: '0.1.5-rc.2', percent: 58 }))
   await expect(JSON.stringify(states, null, 2) + '\n').toMatchFileSnapshot('./expected/update-status-zh.json')
 })
@@ -42,4 +42,13 @@ it('keeps raw diagnostics out of error tooltips in both locales', () => {
     expect(desktopUpdateErrorSummary({ phase: 'error', failedOperation: 'install', message: 'internal failure',
       technicalDetails: 'private diagnostic' }, messages)).toBe(messages.updateInstallFailed)
   }
+})
+
+it('records manual update guidance for builds without an update source in both locales', async () => {
+  const guidance = [en, zh].map(messages => ({
+    title: messages.updateCheckTitle,
+    message: messages.updateUnavailable,
+    detail: messages.updateUnavailableDetail,
+  }))
+  await expect(JSON.stringify(guidance, null, 2) + '\n').toMatchFileSnapshot('./expected/update-unavailable.json')
 })

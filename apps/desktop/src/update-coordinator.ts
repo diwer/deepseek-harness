@@ -13,7 +13,7 @@ const { autoUpdater } = electronUpdater
 
 /** Owns one updater target until its download and installation settle. */
 export class DesktopUpdateCoordinator {
-  private current: DesktopUpdateState = { phase: 'idle' }
+  private current: DesktopUpdateState
   private candidate: string | undefined
   private downloaded = false
   private disposed = false
@@ -57,6 +57,7 @@ export class DesktopUpdateCoordinator {
     private readonly downloadResult?: (success: boolean, reason?: string) => void,
     private readonly channel: 'nightly' | 'latest' = 'nightly',
   ) {
+    this.current = { phase: enabled() ? 'idle' : 'unavailable' }
     if (updater === autoUpdater) {
       // electron-updater omits this internal transport property from its public declarations.
       // Real-Electron qualification exercises the pinned dependency integration.
@@ -77,13 +78,13 @@ export class DesktopUpdateCoordinator {
     this.updater.on('error', this.onError)
   }
 
-  /** Latest observable state; complete download identity remains main-process-owned. */
+  /** Latest observable state; unavailable means no packaged update source. Download identity stays main-process-owned. */
   get state(): DesktopUpdateState { return this.current }
 
   /**
    * Check metadata without downloading, joining any current check.
    * @param manual - Whether a failed check must remain visible in the status indicator.
-   * @returns The check result, including a silent automatic failure when applicable.
+   * @returns The check result, including unavailable without a network request, or a silent automatic failure.
    */
   async check(manual = false): Promise<DesktopUpdateState> {
     this.assertLive()
@@ -184,7 +185,10 @@ export class DesktopUpdateCoordinator {
   private async doCheck(): Promise<DesktopUpdateState> {
     try {
       this.assertLive()
-      if (!this.enabled()) throw new Error('desktop update: this application has no packaged update source')
+      if (!this.enabled()) {
+        this.candidate = undefined
+        return this.setState({ phase: 'unavailable' })
+      }
       const result = await this.updater.checkForUpdates()
       if (result === null) throw new Error('desktop update: no check result was returned')
       const version = result.updateInfo.version

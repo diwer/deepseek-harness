@@ -177,3 +177,14 @@ it.each([
     expect((await screen.findByRole('tooltip')).textContent).toBe(label)
   } finally { f.view.unmount(); f.status.resolve({ phase: 'idle' }) }
 })
+
+it('clears retry feedback when the shell reports no update source', async () => {
+  const f = fixture()
+  try {
+    await act(async () => { f.status.resolve({ phase: 'error', failure: 'check' }) })
+    expect(screen.getByRole('button', { name: '重试更新' })).toBeTruthy()
+    await f.emit({ phase: 'unavailable' })
+    expect(screen.queryByRole('button')).toBeNull()
+    expect(f.open).not.toHaveBeenCalled()
+  } finally { f.view.unmount() }
+})
