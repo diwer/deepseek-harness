@@ -11,7 +11,7 @@ import { NodePtcRuntime } from '@deepseek-ai/dsh-ptc-runtime-node'
 import * as FsObservationPolicy from '@deepseek-ai/dsh-fs-observation-policy'
 import { SandboxedFileSystem } from '@deepseek-ai/dsh-fs-sandbox'
 import {
-  createUserMessage, isAgentLoopRequest, ToolCallId,
+  createUserMessage, isAgentLoopRequest, LlmError, ToolCallId,
   type StreamChunk,
 } from '@deepseek-ai/dsh-llm'
 import * as LlmDeepSeek from '@deepseek-ai/dsh-llm-deepseek-api-key'
@@ -172,6 +172,9 @@ function orchestrate(ctx: Context, real: boolean) {
   })
   ctx.on('llm/stream', (options, next) => {
     if (options.system?.startsWith('REVIEW_POLICY\n') === true) {
+      if (options.temperature !== undefined) {
+        throw new LlmError('Review route does not support temperature', 'UNSUPPORTED_CAPABILITY')
+      }
       expect(options.messages[0]).not.toHaveProperty('source')
       expect(options.messages[0]).not.toHaveProperty('id')
       if (expected === undefined || mainAgent === undefined) throw new Error('Unexpected reviewer call outside a case')

@@ -611,7 +611,7 @@ async function readDecision(stream: AsyncIterable<StreamChunk>): Promise<AutoRev
   return parseDecision(final.text)
 }
 
-/** Review one frozen pending action with the fixed policy and current LLM route. */
+/** Review one frozen pending action with the fixed policy, current LLM route, and provider sampling defaults. */
 async function classifyRisk(
   ctx: Context,
   agent: Agent,
@@ -629,7 +629,6 @@ async function classifyRisk(
       role: 'user',
       content: [{ type: 'text', text: reviewUserText(snapshot) }],
     }],
-    temperature: 0,
     signal,
   })
   return readDecision(ctx.llm.stream(options))
