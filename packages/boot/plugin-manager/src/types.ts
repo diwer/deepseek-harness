@@ -89,6 +89,16 @@ export interface BundleInfo {
   overrides: string[]
 }
 
+/** Registry update lookup for one profile-owned plugin. Unsupported sources are never replaced by registry packages. */
+export interface BundleUpdate {
+  name: string
+  installedVersion?: string
+  status: 'available' | 'current' | 'unsupported' | 'failed' | 'incompatible'
+  /** Exact version and registry accepted by the update check. */
+  target?: { spec: string; version: string; registry: Registry }
+  error?: ManagementError
+}
+
 /** A registry to install from: an http(s) URL, or null for the one pnpm's own configuration names. */
 export type Registry = string | null
 
@@ -206,6 +216,8 @@ export type PluginSpecInspection =
     readonly version?: string
     /** `description` of the package manifest. */
     readonly description?: string
+    /** Unmet requirements for this exact version, absent when compatible or exempted. */
+    readonly incompatible?: IncompatiblePlugin[]
     /** Whether the package declares a bundle patch; null when the spec's form does not say. */
     readonly bundle: boolean | null
     /** The registry that answered for a name, and for the other forms the one an install of the spec asks first. */

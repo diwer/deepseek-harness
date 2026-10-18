@@ -2060,6 +2060,9 @@ importers:
       zod:
         specifier: 4.4.3
         version: 4.4.3
+      semver:
+        specifier: ^7.8.5
+        version: 7.8.5
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: workspace:~
@@ -2115,6 +2118,9 @@ importers:
       chokidar:
         specifier: ^4.0.3
         version: 4.0.3
+      '@types/semver':
+        specifier: ^7.8.0
+        version: 7.8.0
 
   packages/boot/plugin-market:
     dependencies:

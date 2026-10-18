@@ -17,6 +17,12 @@ import { expect, it, onTestFinished, vi } from 'vitest'
 import PluginManager, { type PluginInstallRequestId } from '../src/index.ts'
 import * as operations from '../src/operations.ts'
 
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    addonReadVersion: () => number
+  }
+}
+
 // Changes in these cases come only from GUI operations, never from file notifications.
 vi.mock('chokidar', async (original) => {
   const actual = await original<typeof import('chokidar')>()
@@ -47,6 +53,7 @@ appendFileSync(${JSON.stringify(join(dir, 'addon-evaluations.log'))}, ${JSON.str
 export function apply(ctx) {
   ctx.get('packageReloadTrace').push('start:addon:${version}');
   ctx.provide('addonVersion', ${version});
+  ctx.provide('addonReadVersion', () => ${version});
   ctx.effect(() => () => { ctx.get('packageReloadTrace').push('stop:addon:${version}'); });
 }
 `)
@@ -160,13 +167,13 @@ export function apply(ctx) {
   }
 }
 
-/** Answer each pnpm run by recording it in the trace and applying `run` to the profile files. */
 /** Remove the installed addon bundle, as an upgrade does before it installs another version. */
 async function removeAddon(manager: PluginManager, dir: string, trace: string[]): Promise<void> {
   mockPnpm(dir, trace, () => { removeFiles(dir) })
   expect(await manager.removeBundle('addon')).toMatchObject({ application: 'applied' })
 }
 
+/** Answer each pnpm run by recording it in the trace and applying `run` to the profile files. */
 function mockPnpm(dir: string, trace: string[], run: (args: readonly string[]) => void, exitCode = 0) {
   const pnpm = vi.spyOn(operations, 'runProfilePnpm').mockImplementation(async (_context, args) => {
     trace.push(`pnpm:${String(args[0])}`)
@@ -431,6 +438,7 @@ it('starts a plugin relinked to another directory without a restart', async () =
   expect(await manager.installBundle(linkSource(join(work, 'source-3'), 3), { enabled: true })).toMatchObject({ application: 'applied', changed: true })
   expect(trace).toEqual(['stop:addon:2', 'publish', 'pnpm:remove', 'publish', 'pnpm:add', 'publish', 'start:addon:3'])
   expect(ctx.get('addonVersion')).toBe(3)
+  expect(ctx.get('addonReadVersion')?.()).toBe(3)
 })
 
 it('starts a registry installation of a package that was linked before', async () => {
@@ -444,6 +452,7 @@ it('starts a registry installation of a package that was linked before', async (
   expect(await manager.installBundle('addon@3', { enabled: true })).toMatchObject({ application: 'applied', changed: true })
   expect(trace).toEqual(['stop:addon:2', 'publish', 'pnpm:remove', 'publish', 'pnpm:add', 'publish', 'start:addon:3'])
   expect(ctx.get('addonVersion')).toBe(3)
+  expect(ctx.get('addonReadVersion')?.()).toBe(3)
 })
 
 it('stops nothing before installing a directory without a readable manifest', async () => {
@@ -649,4 +658,202 @@ it('reports restart-required when a reinstallation cannot compare the loaded mod
   expect(result).toMatchObject({ application: 'restart-required', restartReason: 'module-comparison' })
   expect(ctx.get('addonVersion')).toBe(2)
   expect(warn).toHaveBeenCalledWith(expect.objectContaining({ code: 'ENOTDIR' }))
+})
+
+/** Registry answers and pnpm are external; the profile, Loader, module cache and plugin effects remain real. */
+function registryVersion(version: string, engines?: { dsh: string }) {
+  const view = vi.spyOn(operations, 'viewProfilePackage').mockResolvedValue({
+    exitCode: 0, stderr: '', timedOut: false,
+    stdout: JSON.stringify({ name: 'addon', version, dsh: { bundle: { patch: './cordis.patch.yml' } }, ...engines === undefined ? {} : { engines } }),
+  })
+  onTestFinished(() => { view.mockRestore() })
+  return view
+}
+
+it('detects newer releases without changing the installed or running plugin', async () => {
+  const { manager, ctx, dir } = await fixture({ installed: true })
+  const before = readFileSync(join(dir, 'package.json'), 'utf8')
+  const view = registryVersion('2.0.0')
+  expect(await manager.checkUpdates()).toContainEqual({ name: 'addon', installedVersion: '1.0.0', status: 'available',
+    target: { spec: 'addon@2.0.0', version: '2.0.0', registry: null } })
+  expect(view).toHaveBeenCalledWith(dir, 'addon@latest', expect.anything())
+  expect(readFileSync(join(dir, 'package.json'), 'utf8')).toBe(before)
+  expect(ctx.get('addonVersion')).toBe(1)
+})
+
+it('does not offer a downgrade or replace a linked plugin with a registry release', async () => {
+  const { manager, dir } = await fixture({ installed: true })
+  registryVersion('0.9.0')
+  expect(await manager.checkUpdates()).toContainEqual({ name: 'addon', installedVersion: '1.0.0', status: 'current' })
+  const manifest = readProfileManifest('test', dir)
+  manifest.dependencies = { addon: 'link:../addon' }
+  writeFileSync(join(dir, 'package.json'), JSON.stringify(manifest))
+  expect(await manager.checkUpdates()).toContainEqual({ name: 'addon', installedVersion: '1.0.0', status: 'unsupported' })
+})
+
+it('rejects incompatible updates before stopping the old plugin', async () => {
+  const { manager, ctx, trace } = await fixture({ installed: true })
+  registryVersion('2.0.0', { dsh: '>=99.0.0' })
+  expect(await manager.checkUpdates()).toContainEqual(expect.objectContaining({ name: 'addon', status: 'incompatible' }))
+  expect(await manager.updateBundle('addon', '2.0.0')).toMatchObject({ changed: false, application: 'failed', error: { code: 'incompatible-version' } })
+  expect(ctx.get('addonVersion')).toBe(1)
+  expect(trace).not.toContain('stop:addon:1')
+})
+
+it('updates twice in the same Host and executes each replacement after the previous instance is disposed', async () => {
+  const { manager, ctx, dir, trace, evaluationPath } = await fixture({ installed: true })
+  const view = registryVersion('2.0.0')
+  let version = 2
+  mockPnpm(dir, trace, (args) => { if (args[0] === 'remove') removeFiles(dir); else installFiles(dir, version) })
+  expect(await manager.updateBundle('addon', '2.0.0')).toMatchObject({ application: 'applied', version: '2.0.0', changed: true })
+  expect(ctx.get('addonVersion')).toBe(2)
+  expect(ctx.get('addonReadVersion')?.()).toBe(2)
+  version = 3
+  view.mockResolvedValue({ exitCode: 0, stderr: '', timedOut: false,
+    stdout: JSON.stringify({ name: 'addon', version: '3.0.0', dsh: { bundle: { patch: './cordis.patch.yml' } } }) })
+  expect(await manager.updateBundle('addon', '3.0.0')).toMatchObject({ application: 'applied', version: '3.0.0' })
+  expect(ctx.get('addonVersion')).toBe(3)
+  expect(ctx.get('addonReadVersion')?.()).toBe(3)
+  expect(trace.indexOf('stop:addon:1')).toBeLessThan(trace.indexOf('start:addon:2'))
+  expect(trace.indexOf('stop:addon:2')).toBeLessThan(trace.indexOf('start:addon:3'))
+  expect(readFileSync(evaluationPath, 'utf8')).toBe('addon:1\naddon:2\naddon:3\n')
+})
+
+it('keeps a failed replacement inactive instead of reporting success while old code runs', async () => {
+  const { manager, ctx, dir, trace } = await fixture({ installed: true })
+  registryVersion('2.0.0')
+  mockPnpm(dir, trace, (args) => {
+    if (args[0] === 'remove') removeFiles(dir)
+    else {
+      installFiles(dir, 2)
+      writeFileSync(join(dir, 'node_modules', 'addon', 'node_modules', 'addon-plugin', 'plugin.mjs'), 'export function apply() { throw new Error("new plugin cannot start") }')
+    }
+  })
+  const failedUpdate = await manager.updateBundle('addon', '2.0.0')
+  expect(failedUpdate).toMatchObject({ application: 'failed', changed: true })
+  expect(failedUpdate.error?.diagnostic).toContain('new plugin cannot start')
+  expect(ctx.get('addonVersion')).toBeUndefined()
+  expect(trace).toContain('stop:addon:1')
+  mockPnpm(dir, trace, (args) => { if (args[0] === 'remove') removeFiles(dir); else installFiles(dir, 2) })
+  expect(await manager.updateBundle('addon', '2.0.0')).toMatchObject({ application: 'applied', version: '2.0.0' })
+  expect(ctx.get('addonReadVersion')?.()).toBe(2)
+})
+
+it('refuses live updates when HMR is unavailable', async () => {
+  const { manager, ctx } = await fixture({ installed: true, live: false })
+  expect(await manager.updateBundle('addon', '2.0.0')).toMatchObject({ application: 'failed', changed: false, error: { code: 'stop-profile' } })
+  expect(ctx.get('addonVersion')).toBe(1)
+})
+
+it('keeps bundle precedence and disabled selection when updating', async () => {
+  const { manager, ctx, dir, trace } = await fixture({ installed: true, enabled: false })
+  registryVersion('2.0.0')
+  mockPnpm(dir, trace, (args) => { if (args[0] === 'remove') removeFiles(dir); else installFiles(dir, 2) })
+  expect(await manager.updateBundle('addon', '2.0.0')).toMatchObject({ application: 'applied', version: '2.0.0' })
+  expect(ctx.get('addonVersion')).toBeUndefined()
+  expect(readProfileManifest('test', dir).dsh?.profile?.bundles).toEqual(['core'])
+  expect(await manager.setBundleEnabled('addon', true)).toMatchObject({ application: 'applied' })
+  installOtherBundle(dir)
+  const manifest = readProfileManifest('test', dir)
+  manifest.dsh = { profile: { bundles: ['core', 'addon', 'other'] } }
+  writeFileSync(join(dir, 'package.json'), JSON.stringify(manifest))
+  expect(await manager.updateBundle('addon', '2.0.0')).toMatchObject({ application: 'applied' })
+  expect(readProfileManifest('test', dir).dsh?.profile?.bundles).toEqual(['core', 'addon', 'other'])
+})
+
+
+it('retains installed plugins when a release lookup fails or returns invalid metadata', async () => {
+  const { manager, ctx } = await fixture({ installed: true })
+  const view = registryVersion('2.0.0')
+  for (const answer of [
+    { name: 'addon', version: 'not-semver', dsh: { bundle: { patch: './cordis.patch.yml' } } },
+    { name: 'another-plugin', version: '2.0.0', dsh: { bundle: { patch: './cordis.patch.yml' } } },
+    { name: 'addon', version: '2.0.0' },
+  ]) {
+    view.mockResolvedValue({ exitCode: 0, stderr: '', timedOut: false, stdout: JSON.stringify(answer) })
+    expect(await manager.checkUpdates()).toContainEqual(expect.objectContaining({ name: 'addon', status: 'failed' }))
+  }
+  view.mockRejectedValue(new Error('registry unavailable'))
+  expect(await manager.checkUpdates()).toContainEqual(expect.objectContaining({ name: 'addon', status: 'failed',
+    error: { code: 'operation-error', diagnostic: 'registry unavailable' } }))
+  const controller = new AbortController()
+  controller.abort()
+  await expect(manager.checkUpdates(controller.signal)).rejects.toMatchObject({ name: 'AbortError' })
+  expect(ctx.get('addonReadVersion')?.()).toBe(1)
+})
+
+it('skips installed bundles without registry identity or a readable version', async () => {
+  const { manager } = await fixture({ installed: true })
+  const addon = (await manager.listBundles()).find(bundle => bundle.name === 'addon')!
+  const list = vi.spyOn(manager, 'listBundles')
+  onTestFinished(() => { list.mockRestore() })
+  const withoutSource = { ...addon }; delete withoutSource.source
+  const withoutVersion = { ...addon }; delete withoutVersion.version
+  for (const bundle of [withoutSource, withoutVersion, { ...addon, source: 'addon@npm:another@1.0.0' }]) {
+    list.mockResolvedValue([bundle])
+    expect(await manager.checkUpdates()).toEqual([expect.objectContaining({ name: 'addon', status: 'unsupported' })])
+  }
+})
+
+it('refuses updates without a removable installed registry package or an exact nondecreasing version', async () => {
+  const { manager, ctx, trace } = await fixture({ installed: true })
+  const addon = (await manager.listBundles()).find(bundle => bundle.name === 'addon')!
+  const list = vi.spyOn(manager, 'listBundles')
+  onTestFinished(() => { list.mockRestore() })
+  list.mockResolvedValue([])
+  expect(await manager.updateBundle('addon', '2.0.0')).toMatchObject({ changed: false, error: { code: 'not-removable' } })
+  for (const overrides of [{ installed: false }, { removable: false }, { availability: 'installation' as const }]) {
+    list.mockResolvedValue([{ ...addon, ...overrides }])
+    expect(await manager.updateBundle('addon', '2.0.0')).toMatchObject({ changed: false, error: { code: 'not-removable' } })
+  }
+  const withoutSource = { ...addon }; delete withoutSource.source
+  const withoutVersion = { ...addon }; delete withoutVersion.version
+  for (const bundle of [withoutSource, { ...addon, source: 'link:../addon' }, withoutVersion]) {
+    list.mockResolvedValue([bundle])
+    expect(await manager.updateBundle('addon', '2.0.0')).toMatchObject({ changed: false, error: { code: 'invalid-spec' } })
+  }
+  list.mockResolvedValue([addon])
+  for (const version of ['latest', '0.9.0']) {
+    expect(await manager.updateBundle('addon', version)).toMatchObject({ changed: false, error: { code: 'invalid-spec' } })
+  }
+  expect(trace).not.toContain('stop:addon:1')
+  expect(ctx.get('addonReadVersion')?.()).toBe(1)
+})
+
+it('keeps the old plugin running when update preflight fails or returns a different release', async () => {
+  const { manager, ctx, trace } = await fixture({ installed: true })
+  const view = registryVersion('2.0.0')
+  view.mockRejectedValueOnce(new Error('registry unavailable'))
+  expect(await manager.updateBundle('addon', '2.0.0')).toMatchObject({ changed: false,
+    error: { code: 'operation-error', diagnostic: 'registry unavailable' } })
+  for (const answer of [
+    { name: 'addon', version: '2.0.0' },
+    { name: 'addon', version: '3.0.0', dsh: { bundle: { patch: './cordis.patch.yml' } } },
+  ]) {
+    view.mockResolvedValue({ exitCode: 0, stderr: '', timedOut: false, stdout: JSON.stringify(answer) })
+    expect(await manager.updateBundle('addon', '2.0.0')).toMatchObject({ changed: false, error: { code: 'operation-error' } })
+  }
+  expect(trace).not.toContain('stop:addon:1')
+  expect(ctx.get('addonReadVersion')?.()).toBe(1)
+})
+
+it('does not install a replacement when package removal fails', async () => {
+  const { manager, dir, trace } = await fixture({ installed: true })
+  registryVersion('2.0.0')
+  const pnpm = mockPnpm(dir, trace, () => {}, 1)
+  expect(await manager.updateBundle('addon', '2.0.0')).toMatchObject({ application: 'failed', error: { code: 'operation-error' } })
+  expect(pnpm).toHaveBeenCalledOnce()
+  expect(readProfileManifest('test', dir).dependencies?.addon).toBe('1.0.0')
+})
+
+it('tracks failed update requests when pnpm leaves the installed package in place', async () => {
+  const { manager, dir, ctx } = await fixture({ installed: true, enabled: false })
+  registryVersion('2.0.0')
+  mockPnpm(dir, [], (args) => { if (args[0] === 'add') installFiles(dir, 2) })
+  const requestId = 'update-request' as PluginInstallRequestId
+  const pending = manager.updateBundle('addon', '2.0.0', { requestId })
+  expect(await manager.waitForInstall(requestId)).toMatchObject({ application: 'failed', changed: false })
+  expect(await pending).toMatchObject({ application: 'failed', changed: false })
+  expect(await manager.waitForInstall(requestId)).toBeNull()
+  expect(ctx.get('addonReadVersion')).toBeUndefined()
 })

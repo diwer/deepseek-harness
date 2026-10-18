@@ -1,6 +1,7 @@
 - heading "插件" [level=1]
 - text: 安装、启用和配置插件
 - button "插件说明"
+- button "检查更新"
 - button "刷新"
 - group "添加插件":
   - button "添加插件"
@@ -44,6 +45,8 @@
     - button "查看 @fixture/bundle": "@fixture/bundle"
     - text: Registry description for the fixture bundle.
     - switch "启用 @fixture/bundle"
+    - status: 此来源暂不支持版本检测
   - listitem:
     - button "查看 dsh-web-scaffold-defaults": dsh-web-scaffold-defaults
     - switch "启用 dsh-web-scaffold-defaults" [checked]
+    - status: 此来源暂不支持版本检测
