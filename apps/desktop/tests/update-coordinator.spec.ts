@@ -85,7 +85,7 @@ describe('desktop update coordinator', () => {
     ['0.2.1', 'adaptation-required'],
     ['0.2.2-alpha.1', 'adaptation-required'],
   ] as const)('compares official %s to the fixed equivalent release', async (version, phase) => {
-    const f = fixture('nightly', '0.2.1-alpha.4.20261021.3', false, {
+    const f = fixture('nightly', '0.2.1-rc.2-alpha-1', false, {
       upstreamVersion: '0.2.1-rc.2', feedUrl: 'https://download.deepseek.com/dsh-desk/feeds/mac-arm64/',
     })
     f.checkForUpdates.mockResolvedValue({ isUpdateAvailable: true, updateInfo: { version } })

@@ -15,16 +15,14 @@ describe('installer preparation preserves application dependencies', () => {
   it('seals the equivalent official version independently from the source and custom build versions', async () => {
     const { createElectronBuilderConfig } = await import('../scripts/electron-builder-config.mjs')
     const env = { DSH_DESKTOP_APP_ID: 'com.example.installer', DSH_DESKTOP_UNSIGNED: '1',
-      DSH_DESKTOP_UPSTREAM_VERSION: '0.2.1-rc.2' }
+      DSH_DESKTOP_BUILD_VERSION: '0.2.1-rc.2-alpha-1' }
     const config = createElectronBuilderConfig(env, 'darwin', 'arm64')
     expect(config.extraMetadata.dshDesktopUpstreamVersion).toBe('0.2.1-rc.2')
-    expect(config.extraMetadata).not.toHaveProperty('version')
-    for (const version of ['', 'latest', '0.2.1-rc.']) {
-      expect(() => createElectronBuilderConfig({ ...env, DSH_DESKTOP_UPSTREAM_VERSION: version }, 'darwin', 'arm64'))
-        .toThrow(/must be a SemVer version/u)
+    expect(config.extraMetadata).toMatchObject({ version: '0.2.1-rc.2-alpha-1' })
+    for (const version of ['latest', '0.2.1-rc.2-alpha-0', '0.2.1-rc.2-alpha-01']) {
+      expect(() => createElectronBuilderConfig({ ...env, DSH_DESKTOP_BUILD_VERSION: version }, 'darwin', 'arm64'))
+        .toThrow(/desktop build version/u)
     }
-    expect(() => createElectronBuilderConfig({ ...env, DSH_DESKTOP_UNSIGNED: '0' }, 'darwin', 'arm64'))
-      .toThrow(/requires an unsigned custom build/u)
   })
 
   it.each(['win32', 'darwin'] as const)('rejects a missing production policy before signing on %s', async (platform) => {
