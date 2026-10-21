@@ -76,6 +76,22 @@ function fixture(channel: 'nightly' | 'latest' = 'nightly', version = '1.1.0-alp
 }
 
 describe('desktop update coordinator', () => {
+  it.each([
+    ['0.2.1-alpha.4', 'idle'],
+    ['0.2.1-rc.1', 'idle'],
+    ['0.2.1-rc.2', 'idle'],
+    ['0.2.1-rc.2+official.build', 'idle'],
+    ['0.2.1-rc.3', 'adaptation-required'],
+    ['0.2.1', 'adaptation-required'],
+    ['0.2.2-alpha.1', 'adaptation-required'],
+  ] as const)('compares official %s to the fixed equivalent release', async (version, phase) => {
+    const f = fixture('nightly', '0.2.1-alpha.4.20261021.3', false, {
+      upstreamVersion: '0.2.1-rc.2', feedUrl: 'https://download.deepseek.com/dsh-desk/feeds/mac-arm64/',
+    })
+    f.checkForUpdates.mockResolvedValue({ isUpdateAvailable: true, updateInfo: { version } })
+    expect(await f.coordinator.check()).toEqual({ phase, version })
+  })
+
   it('tracks official metadata against the upstream version while refusing custom-build installation', async () => {
     const tracking = { upstreamVersion: '1.1.0-alpha.1', feedUrl: 'https://download.deepseek.com/dsh-desk/feeds/mac-arm64/' }
     const f = fixture('nightly', '9.0.0-custom.20261021', false, tracking)

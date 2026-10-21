@@ -6,6 +6,7 @@ import { join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { valid } from 'semver'
 import {
   resolveDesktopAppId,
   resolveMacOSNotarizationEnvironment,
@@ -58,6 +59,9 @@ export function createElectronBuilderConfig(
     throw new Error('desktop package: DSH_DESKTOP_UNSIGNED must be 0 or 1')
   }
   const unsigned = env.DSH_DESKTOP_UNSIGNED === '1'
+  if (env.DSH_DESKTOP_UPSTREAM_VERSION !== undefined && !unsigned) {
+    throw new Error('desktop package: DSH_DESKTOP_UPSTREAM_VERSION requires an unsigned custom build')
+  }
   const skipNotarization = env.DSH_DESKTOP_MACOS_SKIP_NOTARIZATION === '1'
   if (env.DSH_DESKTOP_MACOS_SKIP_NOTARIZATION !== undefined && !['0', '1'].includes(env.DSH_DESKTOP_MACOS_SKIP_NOTARIZATION)) {
     throw new Error('desktop package: DSH_DESKTOP_MACOS_SKIP_NOTARIZATION must be 0 or 1')
@@ -101,6 +105,10 @@ export function createElectronBuilderConfig(
   // the artifact names, the update feed, and the installed app.getVersion() the updater compares against.
   const productVersion = JSON.parse(readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8')).version
   const buildVersion = resolveDesktopBuildVersion(env, productVersion)
+  const upstreamVersion = env.DSH_DESKTOP_UPSTREAM_VERSION ?? productVersion
+  if (typeof upstreamVersion !== 'string' || valid(upstreamVersion) === null) {
+    throw new Error('desktop package: DSH_DESKTOP_UPSTREAM_VERSION must be a SemVer version')
+  }
   if (update?.channel === 'latest' && buildVersion.includes('-')) throw new Error('desktop package: latest requires a stable version')
   const packaged = resolveDesktopBuildCommit(env)
   return {
@@ -109,7 +117,7 @@ export function createElectronBuilderConfig(
     extraMetadata: {
       dshDesktopAppId: appId,
       dshDesktopUpdateChannel: update?.channel ?? 'nightly',
-      ...(unsigned ? { dshDesktopUpstreamVersion: productVersion } : {}),
+      ...(unsigned ? { dshDesktopUpstreamVersion: upstreamVersion } : {}),
       ...(policy === undefined ? {} : { dshMandatoryUpdatePolicy: policy }),
       ...buildVersion === productVersion ? {} : { version: buildVersion },
       ...packaged === undefined ? {} : { dshBuildCommit: packaged.commit, dshBuildDirty: packaged.dirty },

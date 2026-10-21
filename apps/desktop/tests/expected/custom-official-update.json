@@ -1,14 +1,14 @@
 [
   {
     "message": "This is a custom build. Official updates must be merged and adapted in the code repository, then packaged and installed again.",
-    "detail": "Installed custom version: 0.2.1-alpha.4.20261021.2\nBased on official version: 0.2.1-alpha.4\nLatest official version: 0.2.1-rc.2",
+    "detail": "Installed custom build: 0.2.1-alpha.4.20261021.3\nEquivalent official version: 0.2.1-rc.2\nLatest official version: 0.2.1-rc.2",
     "newer": "A newer official version is available and requires repository adaptation.",
     "current": "No newer official version was found."
   },
   {
     "message": "这是自定义版本，官方更新需要先在代码仓库合并、适配，再重新打包安装",
-    "detail": "当前自定义版本：0.2.1-alpha.4.20261021.2\n基于官方版本：0.2.1-alpha.4\n最新官方版本：0.2.1-rc.2",
+    "detail": "当前自定义构建：0.2.1-alpha.4.20261021.3\n对应官方版本：0.2.1-rc.2\n最新官方版本：0.2.1-rc.2",
     "newer": "发现官方新版本，需要在代码仓库适配更新",
-    "current": "暂未发现比当前基础版本更新的官方版本"
+    "current": "未发现高于对应官方版本的更新"
   }
 ]
