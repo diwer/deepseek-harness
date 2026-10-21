@@ -6,6 +6,7 @@ import { parseDesktopRelease } from '../src/release.ts'
 import type { DesktopUpdateState } from '../src/ipc.ts'
 import { DesktopUpdatePreparationError } from '../src/update-error.ts'
 import { zh } from '../src/locale.ts'
+import type { DesktopOfficialUpdateTracking } from '../src/update-channel.ts'
 
 vi.mock('electron', () => ({ app: { isPackaged: false } }))
 vi.mock('electron-updater', () => ({
@@ -47,7 +48,7 @@ describe('desktop release metadata', () => {
 const coordinators: InstanceType<typeof DesktopUpdateCoordinator>[] = []
 afterEach(() => { for (const item of coordinators.splice(0)) item.dispose() })
 
-function fixture(channel: 'nightly' | 'latest' = 'nightly', version = '1.1.0-alpha.1', enabled = true) {
+function fixture(channel: 'nightly' | 'latest' = 'nightly', version = '1.1.0-alpha.1', enabled = true, tracking?: DesktopOfficialUpdateTracking) {
   const events = new EventEmitter()
   const checkForUpdates = vi.fn(async () => ({
     isUpdateAvailable: true,
@@ -60,19 +61,38 @@ function fixture(channel: 'nightly' | 'latest' = 'nightly', version = '1.1.0-alp
     return ['verified-package']
   })
   const quitAndInstall = vi.fn()
+  const setFeedURL = vi.fn()
   const beforeRestart = vi.fn(async () => true)
   const downloadResult = vi.fn()
   const states: DesktopUpdateState[] = []
-  const updater = Object.assign(events, { checkForUpdates, downloadUpdate, quitAndInstall }) as unknown as AppUpdater
+  const updater = Object.assign(events, { checkForUpdates, downloadUpdate, quitAndInstall, setFeedURL }) as unknown as AppUpdater
   const coordinator = new DesktopUpdateCoordinator(
     (state) => { states.push(state); return state },
-    beforeRestart, updater, () => enabled, () => version, downloadResult, channel,
+    beforeRestart, updater, () => enabled, () => version, downloadResult, channel, tracking,
   )
   coordinators.push(coordinator)
-  return { coordinator, updater, events, states, checkForUpdates, downloadUpdate, quitAndInstall, beforeRestart, downloadResult }
+  return { coordinator, updater, events, states, checkForUpdates, downloadUpdate, quitAndInstall,
+    beforeRestart, downloadResult, setFeedURL }
 }
 
 describe('desktop update coordinator', () => {
+  it('tracks official metadata against the upstream version while refusing custom-build installation', async () => {
+    const tracking = { upstreamVersion: '1.1.0-alpha.1', feedUrl: 'https://download.deepseek.com/dsh-desk/feeds/mac-arm64/' }
+    const f = fixture('nightly', '9.0.0-custom.20261021', false, tracking)
+    f.checkForUpdates.mockResolvedValue({ isUpdateAvailable: false, updateInfo: { version: '1.1.0-rc.2' } })
+    expect(f.setFeedURL).toHaveBeenCalledWith({ provider: 'generic', url: tracking.feedUrl, channel: 'nightly' })
+    expect(await f.coordinator.check()).toEqual({ phase: 'adaptation-required', version: '1.1.0-rc.2' })
+    await expect(f.coordinator.download('1.1.0-rc.2')).rejects.toThrow(/repository adaptation/u)
+    await expect(f.coordinator.install('1.1.0-rc.2')).rejects.toThrow(/repository adaptation/u)
+    expect(f.downloadUpdate).not.toHaveBeenCalled()
+    expect(f.beforeRestart).not.toHaveBeenCalled()
+    expect(f.quitAndInstall).not.toHaveBeenCalled()
+    f.checkForUpdates.mockResolvedValue({ isUpdateAvailable: true, updateInfo: { version: tracking.upstreamVersion } })
+    expect(await f.coordinator.check(true)).toEqual({ phase: 'idle', version: tracking.upstreamVersion })
+    f.checkForUpdates.mockRejectedValue(new Error('offline'))
+    expect(await f.coordinator.check(true)).toMatchObject({ phase: 'error', failedOperation: 'check' })
+    expect(f.downloadUpdate).not.toHaveBeenCalled()
+  })
   it('keeps builds without an update source unavailable without querying or publishing failures', async () => {
     const f = fixture('nightly', '1.1.0-alpha.1', false)
     expect(f.coordinator.state).toEqual({ phase: 'unavailable' })

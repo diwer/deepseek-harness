@@ -75,6 +75,8 @@ describe('installer preparation preserves application dependencies', () => {
       DSH_DESKTOP_UNSIGNED: '1',
     }, 'win32', 'x64')
     expect(config.artifactName).toBe('deepseek-harness-${version}-${os}-${arch}-unsigned.${ext}')
+    const desktopManifest: unknown = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+    expect(desktopManifest).toMatchObject({ version: config.extraMetadata.dshDesktopUpstreamVersion })
   })
 
   it('packages every preload entry point the shell loads', async () => {
@@ -97,6 +99,7 @@ describe('installer preparation preserves application dependencies', () => {
       APPLE_KEYCHAIN_PROFILE: 'installer-test',
     }, 'darwin', 'arm64')
     const packaged = new Set(config.files.filter((entry): entry is string => typeof entry === 'string'))
+    expect(config.extraMetadata.dshDesktopUpstreamVersion).toBeUndefined()
     for (const name of referenced) expect(packaged.has(`lib/${name}`)).toBe(true)
   })
 })

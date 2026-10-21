@@ -19,6 +19,13 @@ describe('desktop locale dictionaries', () => {
       .toBe('plugin@1.2.3 {missing}')
   })
 
+  it('records custom-build adaptation guidance and both version identities', async () => {
+    const copy = [en, zh].map(messages => ({ message: messages.updateCustomBuild,
+      detail: formatDesktopMessage(messages.updateOfficialVersions, { installed: '0.2.1-alpha.4.20261021.2', upstream: '0.2.1-alpha.4', official: '0.2.1-rc.2' }),
+      newer: messages.updateOfficialNewer, current: messages.updateOfficialCurrent }))
+    await expect(JSON.stringify(copy, null, 2) + '\n').toMatchFileSnapshot('./expected/custom-official-update.json')
+  })
+
   it('prefers an explicit supported choice, then the first supported system language', () => {
     expect(resolveDesktopStartupLocale('zh', ['en-US']).id).toBe('zh-CN')
     expect(resolveDesktopStartupLocale('EN', ['zh-CN']).id).toBe('en')

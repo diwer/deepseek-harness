@@ -8,6 +8,7 @@ import { gt, valid } from 'semver'
 import type { DesktopUpdateState } from './ipc.ts'
 import { DesktopUpdateHttpExecutor } from './update-http-executor.ts'
 import { DesktopUpdatePreparationError } from './update-error.ts'
+import type { DesktopOfficialUpdateTracking } from './update-channel.ts'
 
 const { autoUpdater } = electronUpdater
 
@@ -47,6 +48,7 @@ export class DesktopUpdateCoordinator {
    * @param currentVersion - Actual installed application version.
    * @param channel - Installed package channel; omitted test/local callers retain nightly.
    * @param downloadResult - Once per completed download attempt, including platform preparation failures.
+   * @param officialTracking - Custom-build comparison metadata; downloads and installation remain forbidden.
    */
   constructor(
     private readonly publish: (state: DesktopUpdateState) => DesktopUpdateState,
@@ -56,8 +58,9 @@ export class DesktopUpdateCoordinator {
     private readonly currentVersion: () => string = () => app.getVersion(),
     private readonly downloadResult?: (success: boolean, reason?: string) => void,
     private readonly channel: 'nightly' | 'latest' = 'nightly',
+    private readonly officialTracking?: DesktopOfficialUpdateTracking,
   ) {
-    this.current = { phase: enabled() ? 'idle' : 'unavailable' }
+    this.current = { phase: officialTracking !== undefined || enabled() ? 'idle' : 'unavailable' }
     if (updater === autoUpdater) {
       // electron-updater omits this internal transport property from its public declarations.
       // Real-Electron qualification exercises the pinned dependency integration.
@@ -73,6 +76,7 @@ export class DesktopUpdateCoordinator {
     this.updater.allowPrerelease = channel === 'nightly'
     // Selecting a channel can enable downgrade in electron-updater.
     this.updater.allowDowngrade = false
+    if (officialTracking !== undefined) this.updater.setFeedURL({ provider: 'generic', url: officialTracking.feedUrl, channel: 'nightly' })
     this.updater.on('download-progress', this.onProgress)
     this.updater.on('update-downloaded', this.onDownloaded)
     this.updater.on('error', this.onError)
@@ -101,9 +105,11 @@ export class DesktopUpdateCoordinator {
   /**
    * @param version - Version shown in the user's download confirmation.
    * @returns Download readiness or failure, without authorizing installation.
+   * @throws Custom builds reject the request before downloading any artifact.
    */
   async download(version: string): Promise<DesktopUpdateState> {
     this.assertLive()
+    if (this.officialTracking !== undefined) throw new Error('desktop update: custom builds require repository adaptation; download refused')
     if (this.downloaded || this.installOperation !== undefined) return this.current
     this.downloadOperation ??= Promise.resolve().then(async () => {
       await this.checkOperation
@@ -129,9 +135,11 @@ export class DesktopUpdateCoordinator {
    * Install a prepared target after a separate user confirmation.
    * @param version - Exact version displayed in the confirmation, never a renderer-selected URL.
    * @returns Installation handoff or a recoverable preparation error.
+   * @throws Custom builds reject the request before task teardown or installation.
    */
   async install(version: string): Promise<DesktopUpdateState> {
     this.assertLive()
+    if (this.officialTracking !== undefined) throw new Error('desktop update: custom builds require repository adaptation; installation refused')
     if (!this.downloaded || this.downloadOperation !== undefined || version !== this.candidate) throw new Error('desktop update: confirmed target is not ready')
     this.installOperation ??= Promise.resolve().then(async () => {
       this.setState({ phase: 'installing', version })
@@ -191,6 +199,10 @@ export class DesktopUpdateCoordinator {
       const version = result.updateInfo.version
       if (valid(version) === null) throw new Error('desktop update: feed version is invalid')
       if (this.channel === 'latest' && version.includes('-')) throw new Error('desktop update: latest feed contains a prerelease')
+      if (this.officialTracking !== undefined) {
+        this.candidate = undefined
+        return this.setState({ phase: gt(version, this.officialTracking.upstreamVersion) ? 'adaptation-required' : 'idle', version })
+      }
       this.candidate = result.isUpdateAvailable && gt(version, this.currentVersion()) ? version : undefined
       return this.setState(this.candidate === undefined ? { phase: 'idle' } : { phase: 'available', version })
     } catch (error) {

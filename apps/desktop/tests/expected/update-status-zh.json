@@ -8,6 +8,11 @@
     "percent": 58
   },
   {
+    "phase": "adaptation-required",
+    "version": "0.1.5-rc.2",
+    "percent": 58
+  },
+  {
     "phase": "available",
     "version": "0.1.5-rc.2",
     "percent": 58
