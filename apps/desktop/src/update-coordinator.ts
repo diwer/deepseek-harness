@@ -52,11 +52,12 @@ export class DesktopUpdateCoordinator {
     private readonly publish: (state: DesktopUpdateState) => DesktopUpdateState,
     private readonly beforeRestart: () => Promise<boolean>,
     private readonly updater: AppUpdater = autoUpdater,
-    private readonly enabled: () => boolean = () => app.isPackaged && existsSync(join(process.resourcesPath, 'app-update.yml')),
+    enabled: () => boolean = () => app.isPackaged && existsSync(join(process.resourcesPath, 'app-update.yml')),
     private readonly currentVersion: () => string = () => app.getVersion(),
     private readonly downloadResult?: (success: boolean, reason?: string) => void,
     private readonly channel: 'nightly' | 'latest' = 'nightly',
   ) {
+    this.current = { phase: enabled() ? 'idle' : 'unavailable' }
     if (updater === autoUpdater) {
       // electron-updater omits this internal transport property from its public declarations.
       // Real-Electron qualification exercises the pinned dependency integration.
@@ -83,11 +84,12 @@ export class DesktopUpdateCoordinator {
   /**
    * Check metadata without downloading, joining any current check.
    * @param manual - Whether a failed check must remain visible in the status indicator.
-   * @returns The check result, including a silent automatic failure when applicable.
+   * @returns The check result, an unavailable source, or a silent automatic failure.
+   * Packages without an update source never query the feed or publish retry failures.
    */
   async check(manual = false): Promise<DesktopUpdateState> {
     this.assertLive()
-    if (this.downloadOperation !== undefined || this.installOperation !== undefined || this.downloaded) return this.current
+    if (this.current.phase === 'unavailable' || this.downloadOperation !== undefined || this.installOperation !== undefined || this.downloaded) return this.current
     if (!manual && this.current.phase === 'error' && this.current.failedOperation === 'download') return this.current
     this.checkOperation ??= Promise.resolve().then(() => this.doCheck())
       .finally(() => { this.checkOperation = undefined })
@@ -184,7 +186,6 @@ export class DesktopUpdateCoordinator {
   private async doCheck(): Promise<DesktopUpdateState> {
     try {
       this.assertLive()
-      if (!this.enabled()) throw new Error('desktop update: this application has no packaged update source')
       const result = await this.updater.checkForUpdates()
       if (result === null) throw new Error('desktop update: no check result was returned')
       const version = result.updateInfo.version

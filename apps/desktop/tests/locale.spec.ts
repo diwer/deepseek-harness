@@ -9,6 +9,11 @@ describe('desktop locale dictionaries', () => {
     expect(resolveDesktopLocale('fr-FR').messages).toEqual(en)
   })
 
+  it('records manual-update guidance for builds without an update source', async () => {
+    await expect(JSON.stringify({ en: en.updateUnavailable, zh: zh.updateUnavailable }, null, 2) + '\n')
+      .toMatchFileSnapshot('./expected/update-unavailable.json')
+  })
+
   it('formats named values without consuming unknown placeholders', () => {
     expect(formatDesktopMessage('{name}@{version} {missing}', { name: 'plugin', version: '1.2.3' }))
       .toBe('plugin@1.2.3 {missing}')

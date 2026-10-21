@@ -243,3 +243,12 @@ it.each(['en', 'zh-CN'])('records mandatory update guidance and actions across i
   })
   await expect(JSON.stringify(snapshots, null, 2) + '\n').toMatchFileSnapshot(`./expected/update-guidance-${language}.json`)
 })
+
+it('keeps manual-download recovery available when a mandatory build has no updater source', async () => {
+  const p = mandatoryPage({ phase: 'unavailable' })
+  await expect.poll(() => p.element('error').textContent).toBe(p.initial.locale.messages.updateUnavailable)
+  expect(p.element('technical-details').hidden).toBe(true)
+  expect(p.element('page').hidden).toBe(false)
+  expect(p.element('update').hidden).toBe(true)
+  expect(p.dom.window.document.body.classList.contains('visible')).toBe(true)
+})

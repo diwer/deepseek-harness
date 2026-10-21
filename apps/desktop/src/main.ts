@@ -642,6 +642,7 @@ async function main(): Promise<void> {
     updateChannel,
   )
 
+  updateState = updates.state
   const updateSchedule = new DesktopUpdateSchedule(updates, resolveDesktopUpdateScheduleConfig(process.env))
 
   const downloadUpdate = async (version: string): Promise<DesktopUpdateState> => {
@@ -817,6 +818,15 @@ async function main(): Promise<void> {
       let progress: Promise<unknown> | undefined
       try {
         let state = updates.state
+        if (state.phase === 'unavailable') {
+          if (!joinedPolicyAuthentication) {
+            void checkPolicyManually('deferred').catch((error: unknown) => { console.error(error) })
+          }
+          await ordinaryMessageBox({ type: 'info', title: locale.messages.updateCheckTitle,
+            message: locale.messages.updateUnavailable,
+            detail: formatDesktopMessage(locale.messages.updateCurrentDetail, { version: app.getVersion() }) })
+          return
+        }
         if (manual || state.phase === 'idle' || (state.phase === 'error' && state.failedOperation === 'check')) {
           controller = new AbortController()
           ordinaryDialogs.add(controller)

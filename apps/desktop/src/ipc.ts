@@ -37,7 +37,8 @@ export const DESKTOP_IPC = {
 export type DesktopUpdatePreparationFailureKind = 'stop-failed' | 'tasks-changed' | 'tasks-unavailable'
 
 export interface DesktopUpdateState {
-  readonly phase: 'idle' | 'checking' | 'available' | 'downloading' | 'verifying' | 'installing' | 'ready' | 'error'
+  /** Unavailable means this build has no packaged update source; no check was performed. */
+  readonly phase: 'unavailable' | 'idle' | 'checking' | 'available' | 'downloading' | 'verifying' | 'installing' | 'ready' | 'error'
   readonly version?: string
   readonly message?: string
   /** Main-owned diagnostics without subprocess output or credentials; hidden until expanded. */

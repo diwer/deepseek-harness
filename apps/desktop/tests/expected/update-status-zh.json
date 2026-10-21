@@ -1,5 +1,8 @@
 [
   {
+    "phase": "unavailable"
+  },
+  {
     "phase": "idle",
     "version": "0.1.5-rc.2",
     "percent": 58

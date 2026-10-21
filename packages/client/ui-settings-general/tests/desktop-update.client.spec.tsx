@@ -177,3 +177,12 @@ it.each([
     expect((await screen.findByRole('tooltip')).textContent).toBe(label)
   } finally { f.view.unmount(); f.status.resolve({ phase: 'idle' }) }
 })
+
+it('hides the retry indicator when the installed build has no update source', async () => {
+  const f = fixture()
+  try {
+    await act(async () => { f.status.resolve({ phase: 'unavailable' }) })
+    expect(f.view.container.innerHTML).toBe('')
+    expect(f.open).not.toHaveBeenCalled()
+  } finally { f.view.unmount() }
+})

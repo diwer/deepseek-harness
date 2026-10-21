@@ -47,7 +47,7 @@ describe('desktop release metadata', () => {
 const coordinators: InstanceType<typeof DesktopUpdateCoordinator>[] = []
 afterEach(() => { for (const item of coordinators.splice(0)) item.dispose() })
 
-function fixture(channel: 'nightly' | 'latest' = 'nightly', version = '1.1.0-alpha.1') {
+function fixture(channel: 'nightly' | 'latest' = 'nightly', version = '1.1.0-alpha.1', enabled = true) {
   const events = new EventEmitter()
   const checkForUpdates = vi.fn(async () => ({
     isUpdateAvailable: true,
@@ -66,13 +66,24 @@ function fixture(channel: 'nightly' | 'latest' = 'nightly', version = '1.1.0-alp
   const updater = Object.assign(events, { checkForUpdates, downloadUpdate, quitAndInstall }) as unknown as AppUpdater
   const coordinator = new DesktopUpdateCoordinator(
     (state) => { states.push(state); return state },
-    beforeRestart, updater, () => true, () => version, downloadResult, channel,
+    beforeRestart, updater, () => enabled, () => version, downloadResult, channel,
   )
   coordinators.push(coordinator)
   return { coordinator, updater, events, states, checkForUpdates, downloadUpdate, quitAndInstall, beforeRestart, downloadResult }
 }
 
 describe('desktop update coordinator', () => {
+  it('keeps builds without an update source unavailable without querying or publishing failures', async () => {
+    const f = fixture('nightly', '1.1.0-alpha.1', false)
+    expect(f.coordinator.state).toEqual({ phase: 'unavailable' })
+    for (const manual of [false, true, true]) {
+      expect(await f.coordinator.check(manual)).toEqual({ phase: 'unavailable' })
+    }
+    expect(f.checkForUpdates).not.toHaveBeenCalled()
+    expect(f.downloadUpdate).not.toHaveBeenCalled()
+    expect(f.states).toEqual([])
+  })
+
   it('keeps safe preparation diagnostics separate and clears them on an explicit retry', async () => {
     const f = fixture()
     await f.coordinator.check()
