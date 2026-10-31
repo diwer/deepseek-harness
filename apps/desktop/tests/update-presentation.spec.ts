@@ -10,8 +10,9 @@ it('keeps the Electron preload assignable to the product consumer', () => {
 })
 
 it('records visible ordinary-update states without authorizing downloads or installation', async () => {
-  const phases: DesktopUpdateState['phase'][] = ['idle', 'available', 'downloading', 'verifying', 'ready', 'installing', 'error']
-  const states = phases.map(phase => presentDesktopUpdate({ phase, version: '0.1.5-rc.2', percent: 58 }))
+  const phases: DesktopUpdateState['phase'][] = ['idle', 'adaptation-required', 'available', 'downloading', 'verifying', 'ready', 'installing', 'error']
+  const states = [presentDesktopUpdate({ phase: 'unavailable' }),
+    ...phases.map(phase => presentDesktopUpdate({ phase, version: '0.1.5-rc.2', percent: 58 }))]
   await expect(JSON.stringify(states, null, 2) + '\n').toMatchFileSnapshot('./expected/update-status-zh.json')
 })
 

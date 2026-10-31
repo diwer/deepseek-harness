@@ -9,9 +9,21 @@ describe('desktop locale dictionaries', () => {
     expect(resolveDesktopLocale('fr-FR').messages).toEqual(en)
   })
 
+  it('records manual-update guidance for builds without an update source', async () => {
+    await expect(JSON.stringify({ en: en.updateUnavailable, zh: zh.updateUnavailable }, null, 2) + '\n')
+      .toMatchFileSnapshot('./expected/update-unavailable.json')
+  })
+
   it('formats named values without consuming unknown placeholders', () => {
     expect(formatDesktopMessage('{name}@{version} {missing}', { name: 'plugin', version: '1.2.3' }))
       .toBe('plugin@1.2.3 {missing}')
+  })
+
+  it('records custom-build adaptation guidance and both version identities', async () => {
+    const copy = [en, zh].map(messages => ({ message: messages.updateCustomBuild,
+      detail: formatDesktopMessage(messages.updateOfficialVersions, { installed: '0.2.1-rc.2-alpha-1', upstream: '0.2.1-rc.2', official: '0.2.1-rc.2' }),
+      newer: messages.updateOfficialNewer, current: messages.updateOfficialCurrent }))
+    await expect(JSON.stringify(copy, null, 2) + '\n').toMatchFileSnapshot('./expected/custom-official-update.json')
   })
 
   it('prefers an explicit supported choice, then the first supported system language', () => {

@@ -116,6 +116,7 @@ function renderTab(
     closeInstall: vi.fn(),
     editInstallSpec: vi.fn(),
     runInstall: vi.fn(),
+    checkUpdates: vi.fn(),
     update: vi.fn(),
     cancelInstall: vi.fn(),
     reconcileInstall: vi.fn(),
@@ -2429,4 +2430,25 @@ describe('on-demand Official bundles', () => {
     expect(within(detail).queryByRole('button', { name: en.uninstallLabel.replace('{name}', title) })).toBeNull()
     expect(detail.querySelector('[data-plugin-rows]')).toBeNull()
   })
+})
+
+
+it('checks versions and updates a third-party plugin from its card', async () => {
+  const entry = pkg({ name: 'third-party', version: '1.0.0', installed: true, removable: true, availability: 'profile',
+    update: { name: 'third-party', installedVersion: '1.0.0', status: 'available',
+      target: { spec: 'third-party@2.0.0', version: '2.0.0', registry: null } } })
+  const { actions } = renderTab({ packages: [entry] })
+  fireEvent.click(screen.getByRole('button', { name: en.checkUpdates }))
+  expect(actions.checkUpdates).toHaveBeenCalledOnce()
+  fireEvent.click(screen.getByRole('button', { name: en.updateLabel.replace('{name}', 'third-party') }))
+  expect(actions.update).toHaveBeenCalledWith('third-party')
+  const card = document.querySelector('[data-plugin-package="third-party"]')
+  expect(card).not.toBeNull()
+  await expect(`${card?.textContent}\n`).toMatchFileSnapshot('./expected/plugin-update-card.txt')
+})
+
+it('shows a failed update check without removing the installed plugin card', () => {
+  renderTab({ packages: [pkg()], updateStatus: 'failed' })
+  expect(screen.getByText(en.updateCheckFailed)).toBeTruthy()
+  expect(document.querySelector('[data-plugin-package]')).not.toBeNull()
 })

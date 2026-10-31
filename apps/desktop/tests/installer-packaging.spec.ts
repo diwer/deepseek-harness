@@ -12,6 +12,21 @@ vi.mock('node:child_process', async (importOriginal) => {
 })
 
 describe('installer preparation preserves application dependencies', () => {
+  it('seals the equivalent official version independently from the source and custom build versions', async () => {
+    const { createElectronBuilderConfig } = await import('../scripts/electron-builder-config.mjs')
+    const env = { DSH_DESKTOP_APP_ID: 'com.example.installer', DSH_DESKTOP_UNSIGNED: '1',
+      DSH_DESKTOP_BUILD_VERSION: '0.2.1-rc.2-alpha-1' }
+    const config = createElectronBuilderConfig(env, 'darwin', 'arm64')
+    expect(config.extraMetadata.dshDesktopUpstreamVersion).toBe('0.2.1-rc.2')
+    expect(config.extraMetadata).toMatchObject({ version: '0.2.1-rc.2-alpha-1' })
+    const ming = createElectronBuilderConfig({ ...env, DSH_DESKTOP_BUILD_VERSION: '0.2.1-rc5-ming-1' }, 'darwin', 'arm64')
+    expect(ming.extraMetadata).toMatchObject({ version: '0.2.1-rc5-ming-1', dshDesktopUpstreamVersion: '0.2.1-rc.5' })
+    for (const version of ['latest', '0.2.1-rc.2-alpha-0', '0.2.1-rc.2-alpha-01']) {
+      expect(() => createElectronBuilderConfig({ ...env, DSH_DESKTOP_BUILD_VERSION: version }, 'darwin', 'arm64'))
+        .toThrow(/desktop build version/u)
+    }
+  })
+
   it.each(['win32', 'darwin'] as const)('rejects a missing production policy before signing on %s', async (platform) => {
     const { createElectronBuilderConfig } = await import('../scripts/electron-builder-config.mjs')
     expect(() => createElectronBuilderConfig({ DSH_DESKTOP_APP_ID: 'com.example.installer',
@@ -75,6 +90,8 @@ describe('installer preparation preserves application dependencies', () => {
       DSH_DESKTOP_UNSIGNED: '1',
     }, 'win32', 'x64')
     expect(config.artifactName).toBe('deepseek-harness-${version}-${os}-${arch}-unsigned.${ext}')
+    const desktopManifest: unknown = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+    expect(desktopManifest).toMatchObject({ version: config.extraMetadata.dshDesktopUpstreamVersion })
   })
 
   it('packages every preload entry point the shell loads', async () => {
@@ -97,6 +114,7 @@ describe('installer preparation preserves application dependencies', () => {
       APPLE_KEYCHAIN_PROFILE: 'installer-test',
     }, 'darwin', 'arm64')
     const packaged = new Set(config.files.filter((entry): entry is string => typeof entry === 'string'))
+    expect(config.extraMetadata.dshDesktopUpstreamVersion).toBeUndefined()
     for (const name of referenced) expect(packaged.has(`lib/${name}`)).toBe(true)
   })
 })

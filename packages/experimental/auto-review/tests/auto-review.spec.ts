@@ -11,6 +11,7 @@ import LlmRuntime, {
   createToolResultMessage,
   createUserMessage,
   LlmAdapter,
+  LlmError,
   ToolCallId,
   type ContentBlock,
   type GenerateOptions,
@@ -79,6 +80,12 @@ class RecordingAdapter extends LlmAdapter {
 
   async * stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
     this.requests.push(options)
+    if (options.temperature !== undefined) {
+      throw new LlmError(
+        'The subscription route cannot honor GenerateOptions.temperature; remove that setting.',
+        'UNSUPPORTED_CAPABILITY',
+      )
+    }
     const response = this.script.shift()
     if (response === undefined) throw new Error('review adapter script exhausted')
     if (typeof response === 'function') {
@@ -386,8 +393,8 @@ describe('native review request', () => {
       provider: 'review',
       model: 'same-model',
       system: EXPECTED_REVIEW_POLICY,
-      temperature: 0,
     })
+    expect(request).not.toHaveProperty('temperature')
     expect(request).not.toHaveProperty('sessionId')
     expect(request.maxTokens).toBeUndefined()
     expect(request.tools).toBeUndefined()
@@ -945,6 +952,9 @@ describe('native review request', () => {
         ...decisionChunks('{"risk":"low","decision":"allow"}'),
         { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } },
       ],
+      async function* () {
+        throw new LlmError('review route unavailable', 'UNSUPPORTED_CAPABILITY')
+      },
     ]
     const { ctx, adapter } = await harness(invalidResponses)
     const probe = registerProbe(ctx)
@@ -977,6 +987,7 @@ describe('native review request', () => {
     expect(messages[1]).toBe(`${prefix}auto-review: reviewer output must be one JSON object`)
     expect(messages[12]).toBe(`${prefix}auto-review: reviewer output repeats a JSON member`)
     expect(messages[19]).toBe(`${prefix}auto-review: reviewer ended with max-tokens`)
+    expect(messages.at(-1)).toBe(`${prefix}auto-review: reviewer ended with error UNSUPPORTED_CAPABILITY: review route unavailable`)
     for (const message of messages) expect(message.startsWith(prefix)).toBe(true)
     expect(probe.runs()).toBe(0)
     expect(adapter.requests).toHaveLength(cases.length)

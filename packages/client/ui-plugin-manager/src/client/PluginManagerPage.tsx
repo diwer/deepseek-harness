@@ -379,6 +379,7 @@ function RowsSection({ rows, t, resolveText, toggle, configure }: {
 
 /** Declared install source and versions; unavailable files retain their recorded dependency spec. */
 function SourceSection({ pkg, t }: { readonly pkg: PackageView; readonly t: Translate }): ReactNode {
+  const target = pkg.update?.target ?? pkg.installTarget
   if (pkg.source === undefined && !pkg.installed && pkg.availability === 'installation' && !pkg.optional) return null
   return (
     <section className={css.detailSection} data-plugin-source>
@@ -397,15 +398,15 @@ function SourceSection({ pkg, t }: { readonly pkg: PackageView; readonly t: Tran
               <dd>{pkg.version}</dd>
             </div>
           )}
-        {pkg.installTarget === undefined ? null : (
+        {target === undefined ? null : (
           <>
             <div>
               <dt>{t('sourceTargetSpec')}</dt>
-              <dd><code>{pkg.installTarget.spec}</code></dd>
+              <dd><code>{target.spec}</code></dd>
             </div>
             <div>
               <dt>{t('sourceTargetVersion')}</dt>
-              <dd>{pkg.installTarget.version}</dd>
+              <dd>{target.version}</dd>
             </div>
           </>
         )}
@@ -524,6 +525,7 @@ function DetailTop({ crumbLabel, crumbText, onBack, icon, actions }: {
 }
 
 function updateAvailable(pkg: PackageView): boolean {
+  if (pkg.update?.status === 'available') return pkg.update.target !== undefined
   const target = pkg.installTarget
   // An update removes the installed package first, so a package that cannot be removed offers none.
   if (!pkg.installed || !pkg.removable || pkg.availability === 'installation' || target === undefined) return false
@@ -532,12 +534,13 @@ function updateAvailable(pkg: PackageView): boolean {
 }
 
 /** One package as a card that opens its page: its name, its one-liner, its tags, and its bundle switch. */
-function PackageCard({ pkg, t, resolveText, busy, highlighted, onOpen, onSetEnabled }: {
+function PackageCard({ pkg, t, resolveText, busy, highlighted, onOpen, onSetEnabled, onUpdate }: {
   readonly pkg: PackageView
   readonly t: Translate
   readonly resolveText: ResolveText
   readonly busy: boolean
   readonly highlighted: boolean
+  readonly onUpdate: () => void
   readonly onOpen: () => void
   readonly onSetEnabled: (enabled: boolean) => void
 }): ReactNode {
@@ -564,8 +567,13 @@ function PackageCard({ pkg, t, resolveText, busy, highlighted, onOpen, onSetEnab
           </>
         )}
         description={description}
-        end={<EnableSwitch pkg={pkg} title={title} t={t} busy={busy} onSetEnabled={onSetEnabled} />}
+        end={<>
+          {updateAvailable(pkg) ? <Button variant="outline" size="sm" disabled={busy} aria-label={t('updateLabel', { name: title })} onClick={onUpdate}>{t('update')}</Button> : null}
+          <EnableSwitch pkg={pkg} title={title} t={t} busy={busy} onSetEnabled={onSetEnabled} />
+        </>}
       />
+      {pkg.update === undefined || pkg.update.status === 'available' || pkg.update.status === 'current' ? null
+        : <p className={css.subjectMeta} role="status">{t(pkg.update.status === 'unsupported' ? 'updateUnsupported' : pkg.update.status === 'incompatible' ? 'updateIncompatible' : 'updateCheckFailed')}</p>}
       <MetadataError error={pkg.meta?.error} t={t} />
     </li>
   )
@@ -1310,7 +1318,7 @@ function InstallDialog({
   }
   const heading = t(SCREEN_TITLE_KEYS[phase])
   const pending = isInstallPending(phase)
-  const cancellable = phase === 'starting' || phase === 'running' || phase === 'unconfirmed'
+  const cancellable = install.subject?.updateName === undefined && (phase === 'starting' || phase === 'running' || phase === 'unconfirmed')
   const stoppable = cancellable || phase === 'failed' || phase === 'unknown'
   const failure = install.failure
   const uncertainty = failure?.uncertainty
@@ -1393,6 +1401,8 @@ function InstallDialog({
           {phase === 'done' && install.installed === null
             ? <p className={css.result} role="status">{t('installDoneNothing')}</p>
             : null}
+          {phase === 'done' && subject?.updateName !== undefined && !install.restartRequired
+            ? <p className={css.result} role="status">{t(subject.selection ? 'updateApplied' : 'updateSaved')}</p> : null}
           {phase === 'done' && install.restartRequired
             ? <p className={css.resultWarn} role="status">{restartText('installDoneRestart', install.restartReason, t)}</p>
             : null}
@@ -1582,6 +1592,7 @@ export function PluginManagerPage(props: PluginManagerPageProps): ReactNode {
       resolveText={resolveText}
       busy={packageBusy(pkg)}
       highlighted={state.highlight === pkg.name}
+      onUpdate={() => { props.update(pkg.name) }}
       onOpen={() => { setActivation(null); setView({ kind: 'package', name: pkg.name, ...showsMoreList ? { from: 'more' } : {} }) }}
       onSetEnabled={(enabled) => { setActivation(enabled ? pkg.name : null); props.setEnabled(pkg.name, enabled) }}
     />
@@ -1624,6 +1635,10 @@ export function PluginManagerPage(props: PluginManagerPageProps): ReactNode {
               </div>
             </div>
             <div className={css.toolbar} hidden={!onInstalled}>
+              <Button variant="outline" size="sm" disabled={!loaded || state.updateStatus === 'checking'} onClick={props.checkUpdates}>
+                {t(state.updateStatus === 'checking' ? 'checkingUpdates' : 'checkUpdates')}
+              </Button>
+              {state.updateStatus === 'failed' ? <span role="status">{t('updateCheckFailed')}</span> : null}
               <Tooltip label={t('refresh')} delayMs={500} focusDelayMs={500} side="bottom" portal disabled={!loaded || refreshing}>
                 <button type="button" className={css.iconButton} aria-label={t('refresh')} aria-busy={refreshing} disabled={!loaded || refreshing} onClick={props.refresh}>
                   <span className={css.iconWrap} aria-hidden="true">

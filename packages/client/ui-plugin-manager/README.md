@@ -11,7 +11,7 @@ Desktop product events use the optional [product analytics service](../product-a
 
 ## Summary
 
-Use the **Plugins** entry in the Web sidebar to manage the profile's installed bundles and the official bundles the installation ships switched off. Switch bundles and their rows on and off, install a bundle after the Host has read what the spec names, watch pnpm's output, stop a run, and enable what it added. Uninstalling asks for confirmation. A plugin that registers a configuration page is edited here, on its own page; Settings keeps the read-only inventory.
+Use **Plugins** in the Web sidebar to install, enable, configure, update, or remove profile bundles. Inspect a package before installing it, follow pnpm output, cancel downloads, and approve required build scripts. Compatible newer npm releases offer **Update**, which reloads plugin code without restarting the Host and preserves enablement. Unsupported sources and failed checks keep installed cards visible. Plugin configuration pages live here; Settings retains the read-only inventory.
 
 ## Table of Contents
 
@@ -26,6 +26,8 @@ Use the **Plugins** entry in the Web sidebar to manage the profile's installed b
 
 <a id="use-this-package"></a>
 ## Use this package
+
+Opening the Plugins page checks installed plugins for newer npm releases; **Check for updates** repeats the lookup without changing installed packages. Registry plugins with a compatible newer release offer **Update** on their card and detail page. Updates use the Host transaction and preserve the enabled selection. The result distinguishes an active update from a saved update that requires a restart. Unsupported sources, incompatible versions and failed lookups remain visible without removing the installed cards.
 
 Select **Plugins** in the sidebar. The information button uses an 11px caption-colored icon in a 20px square hover area, with a 4px gap after the subtitle. It explains that this page configures official plugins and installs or manages other plugins, while **Settings → Built-in plugins** shows the built-in inventory and runtime status. Hover or focus shows the shared tooltip; clicking keeps it open until another click, Escape, Tab, or an outside click. The page reads the inventory and the bundles through `api-remotes` when first opened; a Host without a managed profile shows the page as unavailable. **Built-in plugin settings** lists official configuration pages by their configured order: Subagent, web search, agent loop, then shell. **Experimental plugins** shows the primary optional bundles, with **More** beside its heading opening a separate page of the same title. That page lists all offered official bundles, including those on the main list, with Codex and Claude Code subagents last. Its back button returns to the main list, where **Installed plugins** remains below Experimental plugins. Bundle details return to the list they were opened from. Catalog entries keep their position after installation or removal. **Installed plugins** lists other profile bundles. Installation-carried optional bundles have no uninstall action. Experimental packages retain the **Experimental** marker on both lists. Bundle details can show a feature preview below the description, also while the bundle is disabled; **DSH badge skill** shows one in English or Chinese following the UI language, and a decode failure shows a short notice without blocking management. Switching on a bundle that page holds back adds it to the main list in the position that page shows it, and switching it off leaves it on that page alone; other bundles keep their place on both. A dependency without a bundle patch is not a plugin and is not listed unless the profile selects it, in which case it carries a problem tag. Global configuration remains in the Settings **Built-in plugins** section.
 
@@ -119,6 +121,8 @@ The Host entry exposes `pluginRegistryProbe.fastest()` through the generated Rem
 The browser plugin registers the `plugins` sidebar entry and its `main` panel through `ctx.slots.inject()`, so both follow late slot declaration, locale changes and teardown. The page is global and belongs to no Session. Display text comes from package metadata and the page's dictionary.
 
 The add control reuses `Button`, `Menu`, and `MenuItemButton`. Both installation actions call the same `openInstall` callback and use `InstallDialog` and `PluginManagerController`. The root-scoped list slot `plugins.add.actions` accepts contributed `MenuItemButton` rows after the install action; each contribution receives an `onDismiss()` callback to close the menu before starting its action.
+
+Other Client plugins can inject `pluginNavigation` and call `openList()` to select the Plugins main list, including when a detail page is already open. This browsing action preserves the current Session and opens no installation dialog. Installation remains an explicit action on the Plugins page.
 
 ### The store
 

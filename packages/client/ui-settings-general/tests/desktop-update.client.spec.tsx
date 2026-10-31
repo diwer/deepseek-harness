@@ -50,6 +50,20 @@ function fixture() {
 
 const available = { phase: 'available', version: '1.0.1' } as const
 
+it('shows official updates as repository adaptation rather than a download action', async () => {
+  const f = fixture()
+  try {
+    await act(async () => { f.status.resolve({ phase: 'adaptation-required', version: '0.2.1-rc.2' }) })
+    const button = screen.getByRole('button', { name: '官方新版' })
+    fireEvent.focus(button)
+    expect((await screen.findByRole('tooltip')).textContent).toContain('代码仓库适配更新')
+    fireEvent.click(button)
+    await act(async () => {})
+    expect(f.open).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('button', { name: '重试更新' })).toBeNull()
+  } finally { f.view.unmount() }
+})
+
 it('renders nothing outside the Desktop carrier', () => {
   const source = new DesktopUpdateSource(undefined)
   const view = render(<DesktopUpdateIndicator wide hidden={false} t={translate(zh)}
@@ -176,4 +190,13 @@ it.each([
     fireEvent.focus(screen.getByRole('button', { name: label }))
     expect((await screen.findByRole('tooltip')).textContent).toBe(label)
   } finally { f.view.unmount(); f.status.resolve({ phase: 'idle' }) }
+})
+
+it('hides the retry indicator when the installed build has no update source', async () => {
+  const f = fixture()
+  try {
+    await act(async () => { f.status.resolve({ phase: 'unavailable' }) })
+    expect(f.view.container.innerHTML).toBe('')
+    expect(f.open).not.toHaveBeenCalled()
+  } finally { f.view.unmount() }
 })

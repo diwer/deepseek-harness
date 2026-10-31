@@ -12,6 +12,8 @@ The [boot package group](../../packages/boot/README.md) owns launcher-provided p
 
 `BundleInfo.official` identifies project-maintained shipped optional bundles and on-demand catalog entries independently of installation. `availability` identifies a readable installation-provided or profile package, or `missing`; on-demand catalog entries exclude undeclared transitive copies. `installed` records the profile dependency declaration. An on-demand `installTarget` carries the host-derived exact spec and version. `BundleInfo` also carries the package name, optional installed version, selected enablement, removal availability, optional resolution error, and, for a bundle the profile's own dependency supplies and the installation does not, `source`: that dependency as a spec `pnpm add` accepts. Its optional `meta` and each `BundleRowInfo.meta` contain display text or a metadata diagnostic; Clients select a language at render time.
 
+`BundleUpdate` describes a version check for one installed bundle: its name, optional installed version, and status (`available`, `current`, `unsupported`, `failed` or `incompatible`). An available result carries an exact target spec, version and registry; failures can carry a management error. Checking versions does not change installed or running plugins. [Plugin Manager](../../packages/boot/plugin-manager/README.md) owns update execution and failure behavior.
+
 `InstallBundleOptions.saveExact` passes `--save-exact` to the shared package installer. `InstallBundleOptions.enabled` defaults to true. False installs without selecting the bundle layer. `approvedBuilds` grants persistent script permission to the supplied pending package names before installation. `registry` names the registry asked first; absent, the configured one.
 
 `PluginRegistries` carries the configured first registry, `null` for the one pnpm's own configuration names, the fallbacks asked after it, and `resolved`, the URL pnpm's own configuration names or `null` while unread. `InspectOptions.registry` names the registry a lookup asks first.
@@ -182,6 +184,20 @@ Manage profile files and apply their declared reload lifecycle.
  * @returns The package the spec names, or why it is refused.
  */
 @Remote async inspect(spec: string, options?: InspectOptions, signal?: AbortSignal): Promise<PluginSpecInspection>
+
+/** Check latest registry releases for installed plugins without changing the profile.
+ * @param signal Cancels lookups when the requesting page closes.
+ * @returns One result per profile-installed bundle; local, Git, aliases and installation-owned packages are unsupported.
+ */
+@Remote async checkUpdates(signal?: AbortSignal): Promise<BundleUpdate[]>
+
+/** Replace a profile plugin and await disposal and activation through HMR under one profile write lock.
+ * @param name Installed bundle name.
+ * @param version Exact registry version selected by the update check; the installed version can be retried, and downgrades are refused.
+ * @param options Installation registry, progress id and script approvals.
+ * @returns Applied after activation settles. Failure after removal leaves the bundle uninstalled or inactive; no rollback is promised.
+ */
+@Remote async updateBundle(name: string, version: string, options?: InstallBundleOptions): Promise<ChangeResult>
 
 /** Persist a plugin entry's desired enablement and apply it on live profiles.
  * @param id Loader entry identity returned by listPlugins.

@@ -9,7 +9,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, expect, it } from 'vitest'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { LlmAdapter, ToolCallId } from '@deepseek-ai/dsh-llm'
+import { LlmAdapter, LlmError, ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { canonicalPath, writableRoots } from '@deepseek-ai/dsh-sandbox'
 import { SESSION_FORMAT_VERSION, SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
@@ -47,6 +47,9 @@ const AUTO_PARENT_ADJUST = 'AUTO_PARENT_ADJUST'
 /** Identify the one-shot Auto Review request and check its request-only outer input. */
 function isAutoReviewRequest(options: GenerateOptions): boolean {
   if (options.system?.startsWith('REVIEW_POLICY\n') !== true) return false
+  if (options.temperature !== undefined) {
+    throw new LlmError('Review route does not support temperature', 'UNSUPPORTED_CAPABILITY')
+  }
   expect(options.messages).toHaveLength(1)
   const message = options.messages[0]
   expect(message).toMatchObject({ role: 'user', content: [{ type: 'text' }] })
