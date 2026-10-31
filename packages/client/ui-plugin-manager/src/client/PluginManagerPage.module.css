@@ -73,8 +73,6 @@
 .toolbar {
   display: flex;
   flex: none;
-  flex-wrap: wrap;
-  max-width: 100%;
   align-items: center;
   justify-content: flex-end;
   gap: 16px;

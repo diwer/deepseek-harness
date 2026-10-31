@@ -4,6 +4,8 @@
  *
  * Manual Desktop CI uses UTC date, workflow run number and attempt as
  * `.YYYYMMDD.run.attempt`; these identify unpublished builds, not release sequences.
+ * Unsigned extension builds use `<official version>-alpha-<revision>` to identify
+ * the equivalent official release separately from the source manifest version.
  *
  * A production release publishes the version in the manifests, aligned with the
  * `dsh` npm package. A test build publishes a version that appends a date and a
@@ -24,6 +26,7 @@
  */
 
 import { parse } from 'semver'
+import { customDesktopUpstreamVersion } from '../custom-version.mjs'
 
 /** Environment variable that carries the build version through one packaging and upload run. */
 export const DESKTOP_BUILD_VERSION_ENV = 'DSH_DESKTOP_BUILD_VERSION'
@@ -84,11 +87,14 @@ export function validateDesktopBuildVersion(buildVersion, productVersion) {
  * Resolve the version a build publishes.
  * @param {NodeJS.ProcessEnv} env - Packaging or upload environment.
  * @param {string} productVersion - Version the manifests declare.
- * @returns {string} The build version when one is present, otherwise the product version.
+ * @returns {string} The build version when present, otherwise the product version. Only unsigned builds accept extension versions.
  */
 export function resolveDesktopBuildVersion(env, productVersion) {
   const buildVersion = env[DESKTOP_BUILD_VERSION_ENV]?.trim()
   if (buildVersion === undefined || buildVersion === '') return productVersion
+  if (env.DSH_DESKTOP_UNSIGNED === '1' && customDesktopUpstreamVersion(buildVersion) !== undefined) {
+    return parseVersion(buildVersion, 'custom version').version
+  }
   return validateDesktopBuildVersion(buildVersion, productVersion)
 }
 

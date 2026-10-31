@@ -22,7 +22,8 @@ function render(view) {
     'tasks-changed': messages.updateTasksChanged,
     'tasks-unavailable': messages.updateTasksUnavailable,
   }
-  const fallback = failed || update.phase === 'idle' || view.error !== undefined
+  const adaptation = update.phase === 'adaptation-required'
+  const fallback = adaptation || failed || update.phase === 'unavailable' || update.phase === 'idle' || view.error !== undefined
   let title = policy.title ?? messages.mandatoryTitle
   let detail = policy.detail ?? messages.mandatoryDetail
   let primary = '', action = '', status = ''
@@ -49,7 +50,9 @@ function render(view) {
       : update.failedOperation === 'install'
         ? preparationMessages[update.preparationFailure] ?? messages.mandatoryInstallFailed
         : messages.mandatoryUnavailable
-    : update.phase === 'idle' && !policy.checking ? messages.mandatoryNoRelease : undefined)
+    : adaptation ? messages.updateCustomBuild
+      : update.phase === 'unavailable' ? messages.updateUnavailable
+      : update.phase === 'idle' && !policy.checking ? messages.mandatoryNoRelease : undefined)
   const technicalDetails = failed ? update.technicalDetails ?? update.message ?? '' : ''
   document.documentElement.lang = id
   document.title = messages.mandatoryTitle

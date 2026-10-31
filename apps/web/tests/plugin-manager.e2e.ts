@@ -99,18 +99,6 @@ describe('web e2e: plugin manager', () => {
     return readFile(join(scaffold.harnessHome, ...segments), 'utf8').catch(() => '')
   }
 
-  it('checks installed-plugin updates without changing profile dependencies', async () => {
-    const panel = await openPluginsPanel()
-    const before = await homeFile('profiles', 'scaffold', 'package.json')
-    const check = panel.getByRole('button', { name: '检查更新', exact: true })
-    await check.waitFor()
-    await expect.poll(() => check.isEnabled()).toBe(true)
-    await check.click()
-    await expect.poll(() => check.isEnabled()).toBe(true)
-    expect(await homeFile('profiles', 'scaffold', 'package.json')).toBe(before)
-    expect(tripwire.pageErrors).toEqual([])
-  })
-
   it('keeps plugin header actions on one line as the available width changes', async () => {
     const facts: string[] = []
     // A dedicated scaffold keeps the measured header deterministic: an install
@@ -276,7 +264,7 @@ describe('web e2e: plugin manager', () => {
         expect(await skeleton.getAttribute('aria-label')).toBe('正在读取插件…')
         expect(await panel.getAttribute('aria-busy')).toBe('true')
         const actions = panel.locator(':scope > header > div:last-child button')
-        expect(await actions.count()).toBe(4)
+        expect(await actions.count()).toBe(3)
         for (const action of await actions.all()) expect(await action.isDisabled()).toBe(true)
         expect(await panel.getByRole('button', { name: '插件说明' }).isEnabled()).toBe(true)
         const loadingAria = await captureStableAria(probe, '[data-plugin-panel]', scaffold.workspaceCwd)
@@ -1043,8 +1031,8 @@ describe('web e2e: plugin manager', () => {
     const install = dialog.getByRole('button', { name: '安装', exact: true })
     expect(await install.isDisabled()).toBe(true)
     expect(await dialog.getByRole('note').textContent()).toContain('请确认插件来源可信')
-    expect(await dialog.getByRole('note').textContent()).toContain('npm 插件检测到兼容新版本时会提供“更新”')
-    expect(await dialog.getByRole('note').textContent()).toContain('本地路径和 Git 来源请先卸载再安装新版')
+    expect(await dialog.getByRole('note').textContent()).toContain('按需安装的官方插件会在版本与 DSH 不同时提供“更新”')
+    expect(await dialog.getByRole('note').textContent()).toContain('其他插件请先卸载再安装新版')
     await dialog.getByRole('button', { name: '插件安装引导和示例' }).click()
     // The guide carries the package-name example only; the former template strings keep their replacement reminder.
     await expect.poll(() => dialog.getByRole('listitem').count()).toBe(1)

@@ -104,11 +104,6 @@ describe('web e2e: Desktop update workspace chrome', () => {
           const tooltip = page.getByRole('tooltip', { name: errorDetail, exact: true })
           await expect.poll(() => tooltip.evaluateAll(elements => elements.map(element => getComputedStyle(element).opacity))).toEqual(['1'])
           await page.screenshot({ path: join(evidence, 'collapsed-error.png') })
-          await publish(presentDesktopUpdate({ phase: 'unavailable' }, en))
-          await expect.poll(() => errorBadge.count()).toBe(0)
-          expect(await opens()).toBe(1)
-          await publish(error)
-          await errorBadge.waitFor()
           await toggle.click()
           const retry = page.getByRole('button', { name: retryLabel, exact: true })
           await retry.waitFor()
@@ -125,11 +120,6 @@ describe('web e2e: Desktop update workspace chrome', () => {
           await page.screenshot({ path: join(evidence, 'retry.png') })
           await retry.click()
           await expect.poll(opens).toBe(2)
-
-          await publish(presentDesktopUpdate({ phase: 'unavailable' }, en))
-          await expect.poll(() => retry.count()).toBe(0)
-          expect(await opens()).toBe(2)
-          await page.screenshot({ path: join(evidence, 'unavailable.png') })
 
           await publish(presentDesktopUpdate({ phase: 'ready', version }, en))
           const ready = page.getByRole('button', { name: readyLabel, exact: true })

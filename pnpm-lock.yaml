@@ -218,9 +218,6 @@ importers:
       tar:
         specifier: ^7.5.22
         version: 7.5.22
-      toml-eslint-parser:
-        specifier: 1.0.3
-        version: 1.0.3
       tsdown:
         specifier: ^0.22.2
         version: 0.22.2(oxc-resolver@11.20.0)(publint@0.3.24)(tsx@4.23.13)(typescript@6.0.3)
@@ -2796,6 +2793,9 @@ importers:
       '@deepseek-ai/dsh-client-ui-directory-picker-native':
         specifier: workspace:*
         version: link:../../client/ui-directory-picker-native
+      '@deepseek-ai/dsh-client-ui-entry-customization':
+        specifier: workspace:*
+        version: link:../../client/ui-entry-customization
       '@deepseek-ai/dsh-client-ui-goal':
         specifier: workspace:*
         version: link:../../client/ui-goal
@@ -3433,6 +3433,9 @@ importers:
       '@deepseek-ai/dsh-client-locale':
         specifier: workspace:*
         version: link:../locale
+      '@deepseek-ai/dsh-client-product-analytics':
+        specifier: workspace:*
+        version: link:../product-analytics
       '@deepseek-ai/dsh-client-store':
         specifier: workspace:*
         version: link:../store
@@ -4119,6 +4122,57 @@ importers:
         version: 16.3.3(@testing-library/dom@10.4.2)(@types/react-dom@18.3.7(@types/react@18.3.31))(@types/react@18.3.31)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       clsx:
         specifier: ^2.0.0
+        version: 2.1.1
+      react:
+        specifier: ^18.2.0
+        version: 18.3.1
+      react-dom:
+        specifier: ^18.2.0
+        version: 18.3.1(react@18.3.1)
+
+  packages/client/ui-entry-customization:
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:~
+        version: link:../../../vendor/cordis
+      '@deepseek-ai/dsh-client-locale':
+        specifier: workspace:*
+        version: link:../locale
+      '@deepseek-ai/dsh-client-product-analytics':
+        specifier: workspace:*
+        version: link:../product-analytics
+      '@deepseek-ai/dsh-client-test-runtime':
+        specifier: workspace:*
+        version: link:../../test-support/client-runtime
+      '@deepseek-ai/dsh-client-ui-conversation':
+        specifier: workspace:*
+        version: link:../ui-conversation
+      '@deepseek-ai/dsh-client-ui-plugin-manager':
+        specifier: workspace:*
+        version: link:../ui-plugin-manager
+      '@deepseek-ai/dsh-client-ui-primitives':
+        specifier: workspace:*
+        version: link:../ui-primitives
+      '@deepseek-ai/dsh-client-ui-renderer':
+        specifier: workspace:*
+        version: link:../ui-renderer
+      '@deepseek-ai/dsh-client-ui-sidebar':
+        specifier: workspace:*
+        version: link:../ui-sidebar
+      '@deepseek-ai/dsh-client-ui-sidebar-right':
+        specifier: workspace:*
+        version: link:../ui-sidebar-right
+      '@deepseek-ai/dsh-client-ui-slots':
+        specifier: workspace:*
+        version: link:../ui-slots
+      '@deepseek-ai/dsh-client-ui-workspace':
+        specifier: workspace:*
+        version: link:../ui-workspace
+      '@testing-library/react':
+        specifier: ^16.3.3
+        version: 16.3.3(@testing-library/dom@10.4.2)(@types/react-dom@18.3.7(@types/react@18.3.31))(@types/react@18.3.31)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      clsx:
+        specifier: ^2.1.1
         version: 2.1.1
       react:
         specifier: ^18.2.0
@@ -5216,6 +5270,9 @@ importers:
       '@deepseek-ai/dsh-client-modules':
         specifier: workspace:*
         version: link:../modules
+      '@deepseek-ai/dsh-client-product-analytics':
+        specifier: workspace:*
+        version: link:../product-analytics
       '@deepseek-ai/dsh-client-shortcuts':
         specifier: workspace:*
         version: link:../shortcuts
@@ -11010,6 +11067,9 @@ importers:
       eventsource-parser:
         specifier: ^3.1.0
         version: 3.1.0
+      semver:
+        specifier: ^7.8.5
+        version: 7.8.5
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: workspace:~
@@ -11095,21 +11155,18 @@ importers:
       '@deepseek-ai/dsh-tools':
         specifier: workspace:*
         version: link:../../core/tools
+      '@types/semver':
+        specifier: ^7.8.0
+        version: 7.8.0
 
   packages/llm/llm-deepseek-account:
     dependencies:
       '@deepseek-ai/cosmokit':
         specifier: link:../../../vendor/cosmokit
         version: link:../../../vendor/cosmokit
-      '@deepseek-ai/dsh-util-values':
-        specifier: workspace:*
-        version: link:../../util/values
       '@deepseek-ai/schemastery':
         specifier: link:../../../vendor/schemastery
         version: link:../../../vendor/schemastery
-      semver:
-        specifier: ^7.8.5
-        version: 7.8.5
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: workspace:~
@@ -11135,9 +11192,6 @@ importers:
       '@deepseek-ai/dsh-timeout':
         specifier: workspace:*
         version: link:../../util/timeout
-      '@types/semver':
-        specifier: ^7.8.0
-        version: 7.8.0
 
   packages/llm/llm-deepseek-api-key:
     dependencies:
@@ -23025,10 +23079,6 @@ packages:
     resolution: {integrity: sha512-o5sSPKEkg/DIQNmH43V0/uerLrpzVedkUh8tGNvaeXpfpuwjKenlSox/2O/BTlZUtEe+JG7s5YhEz608PlAHRA==}
     engines: {node: '>=0.6'}
 
-  toml-eslint-parser@1.0.3:
-    resolution: {integrity: sha512-A5F0cM6+mDleacLIEUkmfpkBbnHJFV1d2rprHU2MXNk7mlxHq2zGojA+SRvQD1RoMo9gqjZPWEaKG4v1BQ48lw==}
-    engines: {node: ^20.19.0 || ^22.13.0 || >=24}
-
   tough-cookie@4.1.4:
     resolution: {integrity: sha512-Loo5UUvLD9ScZ6jh8beX1T6sO1w2/MpCRpEP7V280GKMVUQ0Jzar2U3UJPsrdbziLEMMhu3Ujnq//rhiFuIeag==}
     engines: {node: '>=6'}
@@ -30891,10 +30941,6 @@ snapshots:
   tmp@0.2.7: {}
 
   toidentifier@1.0.1: {}
-
-  toml-eslint-parser@1.0.3:
-    dependencies:
-      eslint-visitor-keys: 5.0.1
 
   tough-cookie@4.1.4:
     dependencies:

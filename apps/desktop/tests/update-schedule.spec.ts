@@ -16,7 +16,7 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-function fixture(jitter = 0, random = () => 0.5) {
+function fixture(jitter = 0, random = () => 0.5, enabled = true) {
   const checkForUpdates = vi.fn(async () => ({ isUpdateAvailable: false, updateInfo: { version: '1.0.0' } }))
   const events = new EventEmitter()
   const downloadUpdate = vi.fn(async () => {
@@ -26,13 +26,24 @@ function fixture(jitter = 0, random = () => 0.5) {
   const updater = Object.assign(events, { checkForUpdates, downloadUpdate, quitAndInstall: vi.fn() }) as unknown as AppUpdater
   const states: DesktopUpdateState[] = []
   const coordinator = new DesktopUpdateCoordinator((state) => { states.push(state); return state }, async () => true,
-    updater, () => true, () => '1.0.0')
+    updater, () => enabled, () => '1.0.0')
   const schedule = new DesktopUpdateSchedule(coordinator, { intervalMs: 10_000, maxBackoffMs: 40_000, jitter }, random)
   cleanup.push(() => { schedule.dispose(); coordinator.dispose() })
   return { schedule, coordinator, states, checkForUpdates, downloadUpdate }
 }
 
 describe('ordinary update polling', () => {
+  it('never polls or schedules retries for a build without an update source', async () => {
+    const f = fixture(0, () => 0.5, false)
+    for (const manual of [false, true, false]) {
+      expect(await f.schedule.check(manual)).toEqual({ phase: 'unavailable' })
+    }
+    await vi.advanceTimersByTimeAsync(80_000)
+    expect(vi.getTimerCount()).toBe(0)
+    expect(f.checkForUpdates).not.toHaveBeenCalled()
+    expect(f.states).toEqual([])
+  })
+
   it('checks immediately, doubles failed delays up to the cap, and resets after success', async () => {
     const f = fixture()
     f.checkForUpdates.mockRejectedValue(new Error('offline'))

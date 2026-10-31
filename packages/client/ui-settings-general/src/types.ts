@@ -14,7 +14,8 @@ export type DesktopUpdateFailureKind =
 
 /** Public semantic preload fields consumed by the settings row. */
 export interface DesktopUpdatePresentation {
-  readonly phase: 'unavailable' | 'idle' | 'checking' | 'available' | 'downloading' | 'verifying' | 'installing' | 'ready' | 'error'
+  /** Unavailable hides update indicators; adaptation-required opens custom-build repository guidance. */
+  readonly phase: 'unavailable' | 'idle' | 'checking' | 'adaptation-required' | 'available' | 'downloading' | 'verifying' | 'installing' | 'ready' | 'error'
   readonly version?: string
   readonly percent?: number
   readonly failure?: DesktopUpdateFailureKind

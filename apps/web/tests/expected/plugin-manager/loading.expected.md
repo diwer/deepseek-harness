@@ -1,7 +1,6 @@
 - heading "插件" [level=1]
 - text: 安装、启用和配置插件
 - button "插件说明"
-- button "检查更新" [disabled]
 - button "刷新" [disabled]
 - group "添加插件":
   - button "添加插件" [disabled]

@@ -33,7 +33,7 @@ import { DESKTOP_IPC, SCHEME, assertDesktopSender, type DesktopUpdateState } fro
 import { readDeviceInfo } from './device-info.ts'
 import { desktopUpdateReadyConfirmation, formatDesktopMessage, resolveDesktopLocale, resolveDesktopStartupLocale } from './locale.ts'
 import { claimDesktopSingleInstance } from './single-instance.ts'
-import { desktopUpdateChannel } from './update-channel.ts'
+import { desktopOfficialUpdateTracking, desktopUpdateChannel } from './update-channel.ts'
 import { DesktopUpdateCoordinator } from './update-coordinator.ts'
 import { DesktopCommandManager } from './command-management.ts'
 import { serveWebDocument, authenticateWebHost, forwardWebRequest } from './web-document.ts'
@@ -585,7 +585,8 @@ async function main(): Promise<void> {
   }
 
   const manifest: unknown = JSON.parse(await readFile(join(app.getAppPath(), 'package.json'), 'utf8'))
-  const updateChannel = desktopUpdateChannel(manifest)
+  const officialTracking = desktopOfficialUpdateTracking(manifest, process.platform, process.arch)
+  const updateChannel = officialTracking === undefined ? desktopUpdateChannel(manifest) : 'nightly'
   const updates = new DesktopUpdateCoordinator(
     publishUpdate,
     async () => {
@@ -639,9 +640,10 @@ async function main(): Promise<void> {
     },
     undefined, undefined, undefined,
     (success, reason) => { void track('desktop_upgrade_download_result', { is_success: success, ...reason === undefined ? {} : { error_reason: reason } }) },
-    updateChannel,
+    updateChannel, officialTracking,
   )
 
+  updateState = updates.state
   const updateSchedule = new DesktopUpdateSchedule(updates, resolveDesktopUpdateScheduleConfig(process.env))
 
   const downloadUpdate = async (version: string): Promise<DesktopUpdateState> => {
@@ -817,21 +819,39 @@ async function main(): Promise<void> {
       let progress: Promise<unknown> | undefined
       try {
         let state = updates.state
-        if (state.phase !== 'unavailable' && (manual || state.phase === 'idle' || (state.phase === 'error' && state.failedOperation === 'check'))) {
+        if (state.phase === 'unavailable') {
+          if (!joinedPolicyAuthentication) {
+            void checkPolicyManually('deferred').catch((error: unknown) => { console.error(error) })
+          }
+          await ordinaryMessageBox({ type: 'info', title: locale.messages.updateCheckTitle,
+            message: locale.messages.updateUnavailable,
+            detail: formatDesktopMessage(locale.messages.updateCurrentDetail, { version: app.getVersion() }) })
+          return
+        }
+        if (manual || state.phase === 'idle' || (state.phase === 'error' && state.failedOperation === 'check')) {
           controller = new AbortController()
           ordinaryDialogs.add(controller)
           const parent = currentDialogWindow()
           progress = parent === undefined ? Promise.resolve() : updateDialog.show(parent, { type: 'info', title: locale.messages.updateCheckTitle,
-            message: locale.messages.updateChecking, buttons: [locale.messages.later], cancelId: 0, signal: controller.signal })
+            message: officialTracking === undefined ? locale.messages.updateChecking : locale.messages.updateCustomBuild,
+            ...(officialTracking === undefined ? {} : { detail: locale.messages.updateChecking }),
+            buttons: [locale.messages.later], cancelId: 0, signal: controller.signal })
           if (!joinedPolicyAuthentication) {
             void checkPolicyManually('deferred').catch((error: unknown) => { console.error(error) })
           }
           state = await updateSchedule.check(true)
         }
         if (isMandatory()) { mandatoryUI?.focus(); return }
-        if (state.phase === 'unavailable') {
-          await ordinaryMessageBox({ type: 'info', title: locale.messages.updateCheckTitle,
-            message: locale.messages.updateUnavailable, detail: locale.messages.updateUnavailableDetail })
+        if (officialTracking !== undefined) {
+          const detail = state.phase === 'error'
+            ? formatDesktopMessage(locale.messages.updateCurrentDetail, { version: app.getVersion() }) + '\n' + desktopUpdateErrorSummary(state, locale.messages)
+            : formatDesktopMessage(locale.messages.updateOfficialVersions, {
+              installed: app.getVersion(), upstream: officialTracking.upstreamVersion,
+              official: state.version ?? officialTracking.upstreamVersion,
+            }) + '\n' + (state.phase === 'adaptation-required' ? locale.messages.updateOfficialNewer : locale.messages.updateOfficialCurrent)
+          await ordinaryMessageBox({ type: state.phase === 'error' ? 'warning' : 'info', title: locale.messages.updateCheckTitle,
+            message: locale.messages.updateCustomBuild, detail,
+            ...(state.phase === 'error' ? { technicalDetails: state.message ?? '' } : {}) })
           return
         }
         if (state.phase === 'error' && state.failedOperation === 'check') { await showUpdateFailure(state); return }

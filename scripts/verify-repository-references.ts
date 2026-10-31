@@ -2,9 +2,8 @@
 
 import { execFileSync } from 'node:child_process'
 import { lstatSync, readFileSync, readlinkSync } from 'node:fs'
-import { basename, resolve } from 'node:path'
+import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { parseTOML } from 'toml-eslint-parser'
 import { canonicalReferenceText } from './verify-public-repository-links.ts'
 
 const root = resolve(import.meta.dirname, '..')
@@ -32,71 +31,45 @@ function isMaintained(file: string): boolean {
   return !excludedPrefixes.some(prefix => file.startsWith(prefix))
 }
 
-/** Preserve source positions while excluding TOML numeric data from commit-reference checks. */
-function commitReferenceText(file: string, source: string): string {
-  if (!file.endsWith('.toml') && basename(file) !== 'uv.lock') return source
-  let program: ReturnType<typeof parseTOML>
-  try {
-    program = parseTOML(source, { tomlVersion: '1.0.0' })
-  } catch (error) {
-    throw new Error(`repository references: ${file}: invalid TOML; fix its syntax before scanning`, { cause: error })
-  }
-  const characters = source.split('')
-  for (const token of program.tokens) {
-    if (token.type !== 'Integer' && token.type !== 'Float') continue
-    characters.fill(' ', token.range[0], token.range[1])
-  }
-  return characters.join('')
-}
-
 /**
  * Inspect a maintained source file against known commit identifiers.
  * @param file - Repository-relative path used in diagnostics and exclusions.
  * @param source - File text or a symlink's stored target.
  * @param commits - Lowercase, unambiguous full or abbreviated commit identifiers.
- * @param sourceKind - Regular file content by default; symlink targets are inspected as text without TOML parsing.
- * @returns One finding per line and reference kind; TOML numeric literals, digests, and other Git object types are accepted.
- * @throws When a maintained TOML file cannot be parsed.
+ * @returns One finding per line and reference kind; digests, uv lockfile byte counts, and other Git object types are accepted.
  */
 export function findRepositoryReferences(
   file: string,
   source: string,
   commits: ReadonlySet<string>,
-  sourceKind: 'file' | 'symlink' = 'file',
 ): RepositoryReference[] {
   if (!isMaintained(file)) return []
   const references: RepositoryReference[] = []
-  const commitLines = (sourceKind === 'symlink' ? source : commitReferenceText(file, source)).split('\n')
   for (const [index, line] of source.split('\n').entries()) {
     if (organizationUrl.test(canonicalReferenceText(line).replace(kitRepositoryUrl, ''))) {
       references.push({ file, line: index + 1, kind: 'organization-url' })
     }
-  }
-  for (const [index, line] of commitLines.entries()) {
-    if ([...line.matchAll(commitCandidate)].some(match => commits.has(match[0].toLowerCase()))) {
+    // Lockfile byte counts can coincide with available abbreviated commit identifiers.
+    const commitText = /(?:^|\/)uv\.lock$/u.test(file) ? line.replace(/\bsize\s*=\s*\d+/gu, 'size = 0') : line
+    if ([...commitText.matchAll(commitCandidate)].some(match => commits.has(match[0].toLowerCase()))) {
       references.push({ file, line: index + 1, kind: 'commit-hash' })
     }
   }
-  return references.sort((left, right) => left.line - right.line)
+  return references
 }
 
-interface MaintainedSource {
-  readonly text: string
-  readonly kind: 'file' | 'symlink'
-}
-
-function readMaintainedFiles(repoRoot: string): Map<string, MaintainedSource> {
+function readMaintainedFiles(repoRoot: string): Map<string, string> {
   const files = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], {
     cwd: repoRoot,
     encoding: 'utf8',
     maxBuffer: gitOutputLimit,
   }).split('\0').filter(file => file !== '' && isMaintained(file))
-  const sources = new Map<string, MaintainedSource>()
+  const sources = new Map<string, string>()
   for (const file of files) {
     const path = resolve(repoRoot, file)
     const stat = lstatSync(path, { throwIfNoEntry: false })
-    if (stat?.isSymbolicLink() === true) sources.set(file, { text: readlinkSync(path), kind: 'symlink' })
-    else if (stat?.isFile() === true) sources.set(file, { text: readFileSync(path, 'utf8'), kind: 'file' })
+    if (stat?.isSymbolicLink() === true) sources.set(file, readlinkSync(path))
+    else if (stat?.isFile() === true) sources.set(file, readFileSync(path, 'utf8'))
   }
   return sources
 }
@@ -167,8 +140,8 @@ export function repositoryCommits(repoRoot: string, sources: Iterable<string>): 
  */
 export function scanRepositoryReferences(repoRoot: string): RepositoryReference[] {
   const sources = readMaintainedFiles(repoRoot)
-  const commits = repositoryCommits(repoRoot, [...sources.values()].map(source => source.text))
-  return [...sources].flatMap(([file, source]) => findRepositoryReferences(file, source.text, commits, source.kind))
+  const commits = repositoryCommits(repoRoot, sources.values())
+  return [...sources].flatMap(([file, source]) => findRepositoryReferences(file, source, commits))
 }
 
 const invokedPath = process.argv[1]

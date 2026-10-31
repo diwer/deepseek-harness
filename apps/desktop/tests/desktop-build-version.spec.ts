@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { customDesktopUpstreamVersion } from '../custom-version.mjs'
 import {
   DESKTOP_BUILD_VERSION_ENV,
   desktopBuildVersionPrefix,
@@ -10,6 +11,22 @@ const PRERELEASE = '0.1.6-alpha.2'
 const STABLE = '0.1.6'
 
 describe('desktop build version', () => {
+  it.each(['0.2.1-rc.2', '0.2.1-alpha.4', '0.2.1', '0.3.0-beta.1'])(
+    'names extension revisions independently from official %s', (official) => {
+      for (const revision of [1, 2, 100]) {
+        const version = `${official}-alpha-${revision}`
+        expect(customDesktopUpstreamVersion(version)).toBe(official)
+        expect(resolveDesktopBuildVersion({ DSH_DESKTOP_UNSIGNED: '1', [DESKTOP_BUILD_VERSION_ENV]: version }, PRERELEASE)).toBe(version)
+        expect(() => resolveDesktopBuildVersion({ [DESKTOP_BUILD_VERSION_ENV]: version }, PRERELEASE)).toThrow()
+      }
+    })
+
+  it.each(['0.2.1-rc.2', '0.2.1-rc.2-alpha-0', '0.2.1-rc.2-alpha-01', '0.2.1-rc.2-alpha-x',
+    'not-semver-alpha-1', '0.2.1-rc.2-alpha-1+build'])(
+    'does not interpret %s as an extension revision', (version) => {
+      expect(customDesktopUpstreamVersion(version)).toBeUndefined()
+    })
+
   it('publishes the product version when no build version is present', () => {
     expect(resolveDesktopBuildVersion({}, PRERELEASE)).toBe(PRERELEASE)
     expect(resolveDesktopBuildVersion({ [DESKTOP_BUILD_VERSION_ENV]: '   ' }, PRERELEASE)).toBe(PRERELEASE)

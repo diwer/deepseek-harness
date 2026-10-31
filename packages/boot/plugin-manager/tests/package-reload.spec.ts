@@ -729,9 +729,8 @@ it('keeps a failed replacement inactive instead of reporting success while old c
       writeFileSync(join(dir, 'node_modules', 'addon', 'node_modules', 'addon-plugin', 'plugin.mjs'), 'export function apply() { throw new Error("new plugin cannot start") }')
     }
   })
-  const failedUpdate = await manager.updateBundle('addon', '2.0.0')
-  expect(failedUpdate).toMatchObject({ application: 'failed', changed: true })
-  expect(failedUpdate.error?.diagnostic).toContain('new plugin cannot start')
+  expect(await manager.updateBundle('addon', '2.0.0')).toMatchObject({ application: 'failed', changed: true,
+    error: { diagnostic: expect.stringContaining('new plugin cannot start') } })
   expect(ctx.get('addonVersion')).toBeUndefined()
   expect(trace).toContain('stop:addon:1')
   mockPnpm(dir, trace, (args) => { if (args[0] === 'remove') removeFiles(dir); else installFiles(dir, 2) })
