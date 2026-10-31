@@ -19,6 +19,8 @@ describe('installer preparation preserves application dependencies', () => {
     const config = createElectronBuilderConfig(env, 'darwin', 'arm64')
     expect(config.extraMetadata.dshDesktopUpstreamVersion).toBe('0.2.1-rc.2')
     expect(config.extraMetadata).toMatchObject({ version: '0.2.1-rc.2-alpha-1' })
+    const ming = createElectronBuilderConfig({ ...env, DSH_DESKTOP_BUILD_VERSION: '0.2.1-rc5-ming-1' }, 'darwin', 'arm64')
+    expect(ming.extraMetadata).toMatchObject({ version: '0.2.1-rc5-ming-1', dshDesktopUpstreamVersion: '0.2.1-rc.5' })
     for (const version of ['latest', '0.2.1-rc.2-alpha-0', '0.2.1-rc.2-alpha-01']) {
       expect(() => createElectronBuilderConfig({ ...env, DSH_DESKTOP_BUILD_VERSION: version }, 'darwin', 'arm64'))
         .toThrow(/desktop build version/u)

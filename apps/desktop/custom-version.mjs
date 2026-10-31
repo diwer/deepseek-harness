@@ -2,11 +2,15 @@
 import { parse } from 'semver'
 
 /**
- * Remove the extension revision suffix without changing the official prerelease fields.
+ * Read the official release represented by a custom desktop version.
  * @param {string} version - Installed or requested version, such as `0.2.1-rc.2-alpha-1`.
  * @returns {string | undefined} Equivalent official version, or undefined for other naming schemes.
  */
 export function customDesktopUpstreamVersion(version) {
+  const ming = /^(?<base>\d+\.\d+\.\d+)-rc(?<rc>0|[1-9]\d*)-ming-[1-9]\d*$/u.exec(version)
+  if (ming !== null && parse(version) !== null) {
+    return parse(`${ming.groups.base}-rc.${ming.groups.rc}`)?.version
+  }
   const match = /^(?<official>.+)-alpha-[1-9]\d*$/u.exec(version)
   if (match === null) return undefined
   const custom = parse(version)

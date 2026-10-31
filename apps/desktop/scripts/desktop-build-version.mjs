@@ -4,7 +4,7 @@
  *
  * Manual Desktop CI uses UTC date, workflow run number and attempt as
  * `.YYYYMMDD.run.attempt`; these identify unpublished builds, not release sequences.
- * Unsigned extension builds use `<official version>-alpha-<revision>` to identify
+ * Unsigned extension builds use `<official version>-alpha-<revision>` or `<version>-rc<number>-ming-<revision>` to identify
  * the equivalent official release separately from the source manifest version.
  *
  * A production release publishes the version in the manifests, aligned with the
@@ -93,6 +93,9 @@ export function resolveDesktopBuildVersion(env, productVersion) {
   const buildVersion = env[DESKTOP_BUILD_VERSION_ENV]?.trim()
   if (buildVersion === undefined || buildVersion === '') return productVersion
   if (env.DSH_DESKTOP_UNSIGNED === '1' && customDesktopUpstreamVersion(buildVersion) !== undefined) {
+    if (/-ming-[1-9]\d*$/u.test(buildVersion) && customDesktopUpstreamVersion(buildVersion) !== parseVersion(productVersion, 'product version').version) {
+      throw new Error(`desktop build version: ${buildVersion} must match product version ${productVersion}`)
+    }
     return parseVersion(buildVersion, 'custom version').version
   }
   return validateDesktopBuildVersion(buildVersion, productVersion)
