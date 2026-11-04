@@ -3,13 +3,13 @@ import { parse } from 'semver'
 
 /**
  * Read the official release represented by a custom desktop version.
- * @param {string} version - Installed or requested version, such as `0.2.1-rc.2-alpha-1`.
+ * @param {string} version - Installed or requested version, such as `0.2.2-alpha3-ming-1`.
  * @returns {string | undefined} Equivalent official version, or undefined for other naming schemes.
  */
 export function customDesktopUpstreamVersion(version) {
-  const ming = /^(?<base>\d+\.\d+\.\d+)-rc(?<rc>0|[1-9]\d*)-ming-[1-9]\d*$/u.exec(version)
+  const ming = /^(?<base>\d+\.\d+\.\d+)-(?<channel>alpha|rc)(?<number>0|[1-9]\d*)-ming-[1-9]\d*$/u.exec(version)
   if (ming !== null && parse(version) !== null) {
-    return parse(`${ming.groups.base}-rc.${ming.groups.rc}`)?.version
+    return parse(`${ming.groups.base}-${ming.groups.channel}.${ming.groups.number}`)?.version
   }
   const match = /^(?<official>.+)-alpha-[1-9]\d*$/u.exec(version)
   if (match === null) return undefined

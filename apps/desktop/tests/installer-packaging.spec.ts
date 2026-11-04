@@ -29,7 +29,7 @@ describe('installer preparation preserves application dependencies', () => {
     if (typeof productManifest !== 'object' || productManifest === null || !('version' in productManifest)
       || typeof productManifest.version !== 'string') throw new Error('Desktop manifest has no version')
     const productVersion = productManifest.version
-    const version = `${productVersion}-alpha-1`
+    const version = `${productVersion.replace(/-(alpha|rc)\.(\d+)$/u, '-$1$2')}-ming-1`
     const current = createElectronBuilderConfig({ ...env, DSH_DESKTOP_BUILD_VERSION: version }, 'darwin', 'arm64')
     expect(current.extraMetadata).toMatchObject({ version, dshDesktopUpstreamVersion: productVersion })
     for (const version of ['latest', '0.2.1-rc.2-alpha-0', '0.2.1-rc.2-alpha-01']) {

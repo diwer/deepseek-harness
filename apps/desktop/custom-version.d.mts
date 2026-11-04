@@ -2,7 +2,7 @@
 
 /**
  * Read the official release represented by a custom desktop version.
- * @param version - Installed or requested version, such as `0.2.1-rc.2-alpha-1`.
+ * @param version - Installed or requested version, such as `0.2.2-alpha3-ming-1`.
  * @returns Equivalent official version, or undefined for other naming schemes.
  */
 export function customDesktopUpstreamVersion(version: string): string | undefined

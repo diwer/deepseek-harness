@@ -4,7 +4,7 @@
  *
  * Manual Desktop CI uses UTC date, workflow run number and attempt as
  * `.YYYYMMDD.run.attempt`; these identify unpublished builds, not release sequences.
- * Unsigned extension builds use `<official version>-alpha-<revision>` or `<version>-rc<number>-ming-<revision>` to identify
+ * Unsigned alpha and RC extension builds use `<version>-<channel><number>-ming-<revision>` to identify
  * the equivalent official release separately from the source manifest version.
  *
  * A production release publishes the version in the manifests, aligned with the

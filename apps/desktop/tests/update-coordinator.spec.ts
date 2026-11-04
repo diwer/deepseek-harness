@@ -77,6 +77,20 @@ function fixture(channel: 'nightly' | 'latest' = 'nightly', version = '1.1.0-alp
 
 describe('desktop update coordinator', () => {
   it.each([
+    ['0.2.2-alpha.2', 'idle'],
+    ['0.2.2-alpha.3', 'idle'],
+    ['0.2.2-alpha.4', 'adaptation-required'],
+    ['0.2.2-rc.1', 'adaptation-required'],
+    ['0.2.2', 'adaptation-required'],
+  ] as const)('compares official %s against the alpha extension base', async (version, phase) => {
+    const f = fixture('nightly', '0.2.2-alpha3-ming-1', false, {
+      upstreamVersion: '0.2.2-alpha.3', feedUrl: 'https://download.deepseek.com/dsh-desk/feeds/mac-arm64/',
+    })
+    f.checkForUpdates.mockResolvedValue({ isUpdateAvailable: true, updateInfo: { version } })
+    expect(await f.coordinator.check()).toEqual({ phase, version })
+  })
+
+  it.each([
     ['0.2.1-alpha.4', 'idle'],
     ['0.2.1-rc.1', 'idle'],
     ['0.2.1-rc.2', 'idle'],
