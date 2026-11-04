@@ -4708,6 +4708,14 @@ export const EVENT_API: readonly EventApiEntry[] = [
     parameters: [{ name: 'sessionId', description: 'the session whose composition changed.' }, { name: 'agentPreset', description: 'the preset recorded by the committed selection.' }],
   },
   {
+    name: 'agent/activity-draining',
+    mode: 'parallel',
+    signature: '\'agent/activity-draining\'(this: Scoped<Agent>, payload: { agent: Agent; activity: AgentActivity }): Promise<void> | void',
+    summary: 'Retire resources after any driver or maintenance exit, including rejection, cancellation, empty input, and pre-step refusal.',
+    description: 'Retire resources after any driver or maintenance exit, including rejection, cancellation, empty input, and pre-step refusal. Admission is already closed; every listener is joined before idle, replacement work, or scope teardown. Failure prevents reopening and rejects `whenIdle()` and disposal. Listeners must not await this Agent\'s `whenIdle()`, disposal, or an owner disposal that waits for this activity: those operations await the listeners themselves.',
+    parameters: [{ name: 'payload', description: '.activity - the retiring process-local identity with a closed admission signal. Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent.' }],
+  },
+  {
     name: 'agent/assistant-stream',
     mode: 'emit',
     signature: '\'agent/assistant-stream\'(this: Scoped<Agent>, payload: { agent: Agent; frame: AssistantStreamFrame }): void',
@@ -5486,6 +5494,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'Agent',
     declaration: 'export interface Agent {\n    readonly id: SessionId;\n}',
+  },
+  {
+    name: 'AgentActivity',
+    declaration: 'export interface AgentActivity {\n    readonly signal: AbortSignal;\n}',
   },
   {
     name: 'AgentCancelCause',

@@ -52,7 +52,7 @@ Main 在 `will-attach-webview` 强制设置带租约标记的 bootstrap User-Age
 
 ### Task IPC authority
 
-私有任务 scope 准入将执行上下文中的真实 Agent 对象与 Host 注册表比较，并在内部推导其 Session。每次准入都创建独立的 Host 本地 capability 与存储身份，同一 Session 中的任务也不例外。序列化的 run、provider、Agent 与 task epoch 只用于关联消息；持有这些字符串不构成授权。声明沿用 Browser 的 `/types` 出口，不新增运行时包或跨应用源码依赖。普通空闲只回收本轮活动的任务，不退役 Agent：同一个 Agent 仍可开始下一轮活动。永久 Agent 退役仅用于真正销毁，不能代替逐活动排空。
+私有任务 scope 准入将执行上下文中的真实 Agent 对象与 Host 注册表比较，并在内部推导其 Session；还要求该精确 Agent 当前未取消的活动。每次准入都创建独立的 Host 本地 capability 与存储身份，同一 Session 中的任务也不例外。序列化的 run、provider、Agent 与 task epoch 只用于关联消息；持有这些字符串不构成授权。声明沿用 Browser 的 `/types` 出口，不新增运行时包或跨应用源码依赖。注册表在可重入回调前预留活动退役结果，先关闭所有匹配任务，再等待任何清理，并合并等待迟到的资源获取、已准入操作和已保留的清理失败。从未创建任务的活动也会关闭准入。普通空闲应当只回收本轮活动的任务，不退役 Agent：同一个 Agent 仍可开始下一轮活动。永久 Agent 退役仅用于真正销毁，不能代替逐活动排空。将该注册表连接 Core 排空事件仍属于生产组合待办。
 
 反向通道先预留请求和退役状态，再发送消息或调用回调。正数、严格递增的请求 ID 与精确 epoch 元组共同绑定每个答复。取消任一请求都会退役整个任务；独立的取消确认必须等待原生退役和全部已准入工作，包括迟到结果。普通结果或错误不能代替此确认。deadline 在 IPC 途中到期时，任务不执行原生操作而直接退役，不把调度延迟当作 Host 损坏。成功与失败的回调都等待已撤销资源的清理；操作错误与清理错误分别保留。
 
@@ -75,5 +75,7 @@ Main 区分原生排空与通信关闭。正常退出先关闭原生准入，保
 Sidebar 持有的稳定祖先保留页面，无需 Browser 自行处理几何或遮挡。隐藏 guest 保留页面内存，也可能继续联网；当前没有空闲回收策略。持久化存储、可选择的隔离级别与权限授权 UI 留作独立工作。临时 Workspace partition 是当前策略，并不意味着 Workspace 隔离必然要求临时存储。
 
 定向测试覆盖导航恢复、preload 监听范围和已迁移的 iframe 行为。独立的 Electron 44.7.0 fixture 验证当前编译产物中的生产 guest manager 挂载流程：同分区反序挂载的精确身份、无活动文档与输入安装边界、默认 User-Agent 还原、跨 owner 拒绝与等待真实销毁的共享释放。另一 fixture 验证 Cookie、localStorage 隔离和重启行为。这些 fixture 不挂载原始 Loader 树，也不确认遮挡、前后台焦点、平台样式或完整任务授权；这些仍是集成验证缺口。本次变更不附带 GUI 录像。此结果不构成完整浏览器安全策略已经可以发布的证据。
+
+协议验证区分 fixture 人工构造的全量输入闸门与真实编译产物 `installDesktopShortcuts().attachGuest`。人工闸门开放、自有 guest 隐藏且受控 overlay 回调未阻断时，所测三种 CDP 按键变体均无需原生获焦即可产生可信的 keydown/keyup；只有提供文本的变体会插入文本。真实 overlay 阻断并不能完整阻止 CDP：部分按下和文本仍会通过，按键对不完整，鼠标输入也仍会通过。`Input.setIgnoreInputEvents` 同时阻断 CDP 与普通注入输入，不能选择性准入不同来源。这两种机制都不构成任务授权。Main 仍须单独关闭经过认证的任务命令准入，并合并等待已准入工作后才能确认人工接管；该组合尚未完成。实验使用 renderer 焦点模拟，不涉及 OS 获焦或物理输入，也没有覆盖真实 overlay UI、已配置快捷键、组合键或 IME。
 
 包内的 Electron 提供方、呈现适配器、页面工厂与 Workspace 存储解析集中在 `src/client/electron/`. 在原生 Electron 测试环境覆盖 guest 行为之前, 该目录暂时不参与逐文件覆盖率门禁; 其单元测试仍然运行. 共享 Browser 控制器、恢复 UI、iframe 代码和 Sidebar 保活仍遵循现有覆盖率要求.

@@ -75,13 +75,20 @@ interface Agent {
   readonly inbox: Inbox
   /** The current lifecycle state, mirrored on every `agent/status` transition. */
   readonly status: AgentStatus
+  /**
+   * Current process-local resource owner, retained with a closed signal during
+   * drainage or after failed drainage. `null` means true idle; absence means
+   * this implementation does not support per-activity resource admission.
+   */
+  readonly activity?: AgentActivity | null
   /** Agent-scoped context; its contributions are agent-local, unwind on disposal, and reject registration afterward. */
   readonly ctx: Context
 
   /**
    * Clear queued and steering work — unless `keepInbox` — and abort the active
-   * turn or between-turn task. The first cause wins for that activity. With no
-   * active activity, cancellation is a no-op and does not arm later work.
+   * turn or between-turn task. Admission closes before operation abort callbacks;
+   * the first cause wins. With no active activity, cancellation does not arm later
+   * work. A `disposed` cause suppresses automatic replay, not later explicit wakes.
    * @param cause - the stable caller intent carried by the active operation signal.
    * @param options - cancellation options; `keepInbox` preserves pending work.
    */
@@ -90,28 +97,33 @@ interface Agent {
   /**
    * Resolve after the current whole-agent activity reaches quiescence. This
    * follows replacement work started before the observed driver retires,
-   * but does not identify the settlement of any particular message.
-   * @returns fulfillment after no active driver or maintenance task remains.
+   * including resource drainage, but not any particular message's settlement.
+   * Drainage failure rejects this and later calls and prevents new activity.
+   * Do not await this method inside this Agent's drainage listener.
+   * @returns fulfillment after no active driver, maintenance, or drainage remains.
    */
   whenIdle(): Promise<void>
 
   /**
    * Run one non-turn maintenance task from the true idle phase. The task starts
    * synchronously after claiming that phase; later waking input remains in the
-   * inbox until the task settles, while public status stays `idle`.
-   * `whenIdle()` follows both the task and any waking work released behind it.
+   * inbox until the task and resource drainage settle; public status stays `idle`.
+   * `whenIdle()` follows both drainage and any waking work released behind it.
+   * Task failure alone does not reject quiescence; drainage failure does, retaining
+   * both errors when the task also fails. Do not call from a drainage listener.
    * @param task - operation whose fulfillment or rejection is preserved, with a signal aborted by {@link cancel}.
-   * @throws synchronously when turn-driving or another maintenance task already owns the agent.
-   * @returns the task promise.
+   * @throws {@link AgentActivityBusyError} synchronously for transient activity contention.
+   * Disposal and failed drainage reject without this retry signal.
+   * @returns the task result after resource drainage, or rejection with task and drainage failures.
    */
   runMaintenance<T>(task: (signal: AbortSignal) => Promise<T>): Promise<T>
 
   /**
    * Route identified input to an inbox boundary and optionally wake the driver.
-   * Waking input submitted after active cancellation is queued for the next
-   * turn and runs when the aborted activity converges to idle; a `disposed`
-   * cancel leaves it parked. A wake submitted while already idle always opens
-   * its turn boundary, even when its message is cleared before the driver
+   * Waking input submitted after admission closes is queued for the next turn
+   * and runs only after successful resource drainage; a `disposed` cancel leaves
+   * it parked until a later explicit wake from idle. Handle teardown permanently
+   * forbids reopening. A wake opens its turn even when cleared before the driver
    * claims ([driver wake convergence](../../agent-loop/src/agent.ts)).
    * @param message - identified content and the source that supplied it.
    * @param target - the preferred next-turn or next-step inbox boundary.
@@ -144,6 +156,29 @@ interface Agent {
    * @param message - identified injected context and the source that supplied it.
    */
   inject(message: UserMessage): void
+}
+```
+
+```ts type-equiv
+/** Process-local identity of one driver or maintenance activity; never serialized. */
+interface AgentActivity {
+  /**
+   * Resource-admission signal, separate from the operation's cancellation signal.
+   * Closed synchronously before cancellation callbacks and before drainage; an
+   * aborted signal forbids admission even while existing resources are retiring.
+   */
+  readonly signal: AbortSignal
+}
+```
+
+```ts public-api
+/** Another activity owns maintenance admission; retry after its quiescence. */
+declare class AgentActivityBusyError extends Error {
+  /**
+   * Identify the Agent whose current activity prevented maintenance.
+   * @param id - live Agent/session identity.
+   */
+  constructor(id: SessionId);
 }
 ```
 
@@ -879,6 +914,32 @@ Source: [`packages/core/agent/src/index.ts`](../../packages/core/agent/src/index
 <a id="agent-events"></a>
 
 ### `agent/*` events
+
+<a id="agentactivity-draining--parallel"></a>
+
+#### `agent/activity-draining` — parallel
+
+Retire resources after any driver or maintenance exit, including rejection, cancellation, empty input, and pre-step refusal. Admission is already closed; every listener is joined before idle, replacement work, or scope teardown. Failure prevents reopening and rejects `whenIdle()` and disposal. Listeners must not await this Agent's `whenIdle()`, disposal, or an owner disposal that waits for this activity: those operations await the listeners themselves.
+
+```ts cordis-catalog
+/**
+ * Retire resources after any driver or maintenance exit, including rejection,
+ * cancellation, empty input, and pre-step refusal. Admission is already closed;
+ * every listener is joined before idle, replacement work, or scope teardown.
+ * Failure prevents reopening and rejects `whenIdle()` and disposal. Listeners
+ * must not await this Agent's `whenIdle()`, disposal, or an owner disposal
+ * that waits for this activity: those operations await the listeners themselves.
+ * @param payload.agent - the agent whose activity is draining.
+ * @param payload.activity - the retiring process-local identity with a closed admission signal.
+ * Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent.
+ * @mode parallel
+ */
+'agent/activity-draining'(this: Scoped<Agent>, payload: { agent: Agent; activity: AgentActivity }): Promise<void> | void
+```
+
+Types: [Scoped](scope.zh.md)
+
+Source: [`packages/core/agent/src/runtime-types.ts`](../../packages/core/agent/src/runtime-types.ts)
 
 <a id="agentassistant-stream--emit"></a>
 

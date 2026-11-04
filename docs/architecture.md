@@ -72,7 +72,7 @@ Events are the extension points, and picking the right domain is the first decis
 - **Agent events** (`agent/*`) carry a live `Agent`: inbox, step, status, request, validation, continuation. Use one to observe or intercept work in flight.
 - **Capability events** attach policy and adapters to a seam (`fs/*`, `tools/*`, `telemetry/*`) without importing the loop.
 
-AgentLoop initializes Agents with rollback and awaits serial `agent/created` before queued work. Unload retains resources through Agent teardown; [agent-loop](../packages/core/agent-loop/README.md#understand-the-implementation) defines ordering.
+AgentLoop initializes Agents with rollback and awaits serial `agent/created` before queued work. Every driver or maintenance exit closes resource admission and joins scoped parallel `agent/activity-draining` listeners before idle, replay, or teardown. Unload retains resources through Agent teardown; [agent-loop](../packages/core/agent-loop/README.md#understand-the-implementation) defines ordering and failure behavior.
 
 The [event map](event-producer-consumer.md) lists every event's producers and consumers.
 

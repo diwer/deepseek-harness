@@ -237,7 +237,7 @@ function TabSlot({
 function bodiesFor(panel: PanelProps): TabRenderer {
   const { t, ...rest } = panel
   // Slot dispatch selects a type; the record key separates bodies of that type.
-  return tab => (
+  return tab => panel.surface.unpublishedBodies?.includes(tab.id) === true ? null : (
     <TabSlot
       key={tab.id}
       {...rest}

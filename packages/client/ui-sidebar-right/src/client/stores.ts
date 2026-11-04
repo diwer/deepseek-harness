@@ -45,6 +45,8 @@ export interface SurfaceState {
   readonly history: History
   /** How many ids this surface has minted; carried so replay stays reproducible. */
   readonly minted: number
+  /** In-memory deny-only gate for newly prepared bodies; never persisted. */
+  readonly unpublishedBodies?: readonly TabId[]
 }
 
 /**
@@ -256,7 +258,10 @@ function advance(surface: SurfaceState, plan: SurfacePlan, seed: () => SidebarRi
   const after = replay(surface.layout, planned)
   const settled = planSettle(after, counter.mint, after.expanded ? makeTab : undefined)
   const stepped = record(surface.history, surface.layout, [...planned, ...settled])
-  return { layout: stepped.state, history: stepped.history, minted: counter.used() }
+  return { ...surface, layout: stepped.state, history: stepped.history, minted: counter.used(),
+    ...surface.unpublishedBodies === undefined ? {} : {
+      unpublishedBodies: surface.unpublishedBodies.filter(id => stepped.state.tabs[id] !== undefined),
+    } }
 }
 
 /**
@@ -288,6 +293,10 @@ type SidebarRightActions = {
     intent: OpenContentIntent,
     settled: (tabId: TabId) => void,
   ) => void
+  /** Private background intent; its committed record remains body-blocked until publication. */
+  prepareContent: (draft: SidebarRightState, sessionId: string, intent: Pick<OpenContentIntent, 'kind' | 'contentId' | 'title'>) => void
+  publishPreparedBody: (draft: SidebarRightState, sessionId: string, tabId: TabId) => void
+  discardPrepared: (draft: SidebarRightState, sessionId: string, tabId: TabId) => void
   duplicateTab: (draft: SidebarRightState, sessionId: string, tabId: TabId) => void
   closeTab: (draft: SidebarRightState, sessionId: string, tabId: TabId) => void
   focusTab: (draft: SidebarRightState, sessionId: string, tabId: TabId) => void
@@ -310,7 +319,12 @@ type HistoryStepper =
 /** Step a surface through the history in one direction. */
 function stepped(surface: SurfaceState, step: HistoryStepper): SurfaceState {
   const moved = step(surface.history, surface.layout)
-  return moved === undefined ? surface : { ...surface, layout: moved.state, history: moved.history }
+  return moved === undefined ? surface : {
+    ...surface, layout: moved.state, history: moved.history,
+    ...surface.unpublishedBodies === undefined ? {} : {
+      unpublishedBodies: surface.unpublishedBodies.filter(id => moved.state.tabs[id] !== undefined),
+    },
+  }
 }
 
 /**
@@ -331,6 +345,25 @@ export function createSidebarRightStore(
       // Materialize a session's surface without changing it, so the first read
       // after a session switch sees the collapsed empty column rather than nothing.
       open: (d, sessionId: string) => { d.bySession = seat(d, sessionId, surface => surface) },
+      prepareContent: (d, sessionId, intent) => {
+        d.bySession = seat(d, sessionId, (surface) => {
+          let created: TabId | undefined
+          const next = advance(surface, (state, mint) => {
+            const planned = planOpenContent(state, mint, { ...intent, revealIfOpened: false })
+            created = planned.tabId
+            return planned.ops.map(op => op.type === 'openTab' ? { ...op, type: 'insertTab' } : op)
+          }, seed)
+          return { ...next, unpublishedBodies: [...next.unpublishedBodies ?? [], ...(created === undefined ? [] : [created])] }
+        })
+      },
+      publishPreparedBody: (d, sessionId, tabId) => {
+        d.bySession = seat(d, sessionId, surface => ({ ...surface,
+          unpublishedBodies: surface.unpublishedBodies?.filter(id => id !== tabId) ?? [] }))
+      },
+      discardPrepared: (d, sessionId, tabId) => {
+        d.bySession = seat(d, sessionId, surface => advance(surface, state => state.tabs[tabId] === undefined
+          ? [] : [{ type: 'closeTab', tabId }], seed))
+      },
       setExpanded: (d, sessionId: string, expanded: boolean) => {
         d.bySession = seat(d, sessionId, s => advance(s, state => planSetExpanded(state, expanded), seed))
       },

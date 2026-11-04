@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { TabId } from '@deepseek-ai/dsh-client-ui-dockkit'
 import { IframeImpl } from '../src/client/browser/IframeImpl.ts'
 import { IframePresentation } from '../src/client/view/IframePresentation.ts'
 
@@ -12,7 +13,7 @@ describe('IframeImpl', () => {
   it('owns transient sandbox mode and revision-scoped load state', async () => {
     const persist = vi.fn()
     const presentation = new IframePresentation({ loaded: vi.fn(), failed: vi.fn(), remounted: vi.fn() })
-    const frame = new IframeImpl({ initial: undefined, persist, openRequested: vi.fn() }, presentation)
+    const frame = new IframeImpl({ tabId: 'iframe-frame' as TabId, signal: new AbortController().signal, initial: undefined, persist, openRequested: vi.fn() }, presentation)
     frames.push(frame)
     const listener = vi.fn()
     const unsubscribe = frame.subscribe(listener)

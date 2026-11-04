@@ -50,8 +50,9 @@ export interface SubagentActivation {
   /** Accepted inbox message, when the backend has a local inbox. */
   readonly messageId?: MessageId
   /**
-   * Execution result after teardown settles and notifications are sent; capture failures reject.
-   * Teardown failures are reported by dispose() without replacing a captured result.
+   * Execution result after teardown and notifications; capture and local cleanup failures reject.
+   * Earlier capture or quiescence failure stays primary; dispose() retains cleanup aggregation.
+   * External backend cleanup failure does not replace its captured execution result.
    */
   readonly result: Promise<SubagentResult>
   /** Stop and release this activation and its owned descendants; rejects on teardown failure. */

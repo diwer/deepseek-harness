@@ -79,6 +79,8 @@ await handle.agent.whenIdle()
 
 `agent/*` 事件让插件无需依赖循环包即可作用于实时工作。`agent/pre-step` 可以拒绝拟进入的步骤或替换进入它的消息；`agent/request-error` 让监听器重试失败的模型请求；`agent/turn-stopping` 在本可完成的轮次关闭前运行，并可通过 steer 使其保持打开。`agent/assistant-stream` 携带一个进程本地 Assistant attempt 的有序 start、瞬态分片与 end frame。start 给出该 attempt 的轮次与步骤，分片索引从零开始密集递增，`end.index` 则是下一个分片位置。loop 会在 committed end frame 前把完整紧凑流提交为一个 `assistant/message` 或 `assistant/attempt`，因此实时事件仍是呈现数据而非回放来源。`agent/status`、`agent/created` 与 `agent/disposed` 驱动 UI 与协调状态，逐消息的 `agent/inbox/*` 通知则让收件箱投影保持同步。确切签名、分发 mode 与 payload 约定见 [core 子系统页](../../../docs/subsystems/core.zh.md#cordis-surface) 的生成区块。
 
+实现支持时，`Agent.activity` 标识一个进程本地的驱动或维护活动。`undefined` 表示不支持，`null` 表示没有活动。资源所有者捕获该身份，并通过其独立的准入信号拒绝关闭后的新工作。带作用域的并行 `agent/activity-draining` 事件在每种退出路径上释放这些资源，而不只在轮次完成时运行；顺序和失败行为见 [AgentLoop 资源排空](../agent-loop/README.zh.md#activity-resource-drainage)。该身份及其信号都不持久化。`runMaintenance()` 仅在暂态活动争用时同步抛出 `AgentActivityBusyError`；调用方可在静止后重试，但不能把永久释放或保留的排空失败当作忙碌重试。
+
 -----
 
 <a id="understand-the-implementation"></a>

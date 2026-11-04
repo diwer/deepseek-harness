@@ -1,5 +1,6 @@
 /** Native webview events controlled by each test; presentation and navigation stay real. */
 import { vi } from 'vitest'
+import type { TabId } from '@deepseek-ai/dsh-client-ui-dockkit'
 import type { DesktopBrowserBridge, DesktopBrowserLeaseId, DesktopBrowserReservation } from '../src/types.ts'
 import type { BrowserTabState } from '../src/client/browser/BrowserPersistence.ts'
 import { createElectronPage } from '../src/client/electron/pages.ts'
@@ -23,7 +24,8 @@ export function electronFixture(initial?: BrowserTabState, nativeAttachment?: De
   const workspace = vi.fn(async (_signal: AbortSignal) => 'cwd:/workspace')
   const persist = vi.fn()
   const openRequested = vi.fn()
-  const page = createElectronPage({ initial, persist, openRequested }, bridge, workspace)
+  const page = createElectronPage({ tabId: `tab-${sequence}` as TabId, signal: new AbortController().signal,
+    initial, persist, openRequested }, bridge, workspace)
   const presentation = page.presentation
   if (!(presentation instanceof ElectronWebviewPresentation)) throw new Error('expected the Electron presentation')
   const create = presentation.createElement.bind(presentation)

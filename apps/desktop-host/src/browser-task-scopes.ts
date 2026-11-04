@@ -2,14 +2,14 @@
  * Host-private browser task admission and storage capabilities. Wire epochs are
  * correlation metadata, never authority; only this registry's exact objects admit work.
  *
- * The activity owner must revokeAndDrain every owned task before publishing idle.
+ * Each task belongs to the exact live Agent activity. The composition root must
+ * await revokeActivityAndDrain in agent/activity-draining before publishing idle.
  * revokeAgentAndDrain permanently retires the Agent: use it only for actual Agent
  * destruction, not ordinary idle, since the same Agent can run another activity.
- * This is not integrated: turn-stopping skips cancellation/error paths, Agent scope
- * disposal follows idle, and agent/disposed is emitted rather than awaited.
+ * No production provider or model-facing Tool is composed here.
  */
 import { randomUUID } from 'node:crypto'
-import type { Agent, AgentRegistry } from '@deepseek-ai/dsh-agent'
+import type { Agent, AgentActivity, AgentRegistry } from '@deepseek-ai/dsh-agent'
 import type { DesktopBrowserTaskScope } from '@deepseek-ai/dsh-client-ui-sidebar-browser/types'
 
 /** Generated wire metadata with Session identity derived from the authenticated Agent. */
@@ -32,7 +32,8 @@ export interface BrowserTaskExecution {
 
 /** Expected admission failures; cleanup failures retain their original rejection. */
 export type BrowserTaskScopeErrorCode =
-  | 'AGENT_REQUIRED' | 'AGENT_RETIRED' | 'ABORTED' | 'SCOPE_REVOKED' | 'INVALID_SCOPE' | 'DISPOSED'
+  | 'AGENT_REQUIRED' | 'AGENT_RETIRED' | 'ACTIVITY_REQUIRED' | 'ACTIVITY_RETIRED'
+  | 'ABORTED' | 'SCOPE_REVOKED' | 'INVALID_SCOPE' | 'DISPOSED'
 
 /** Admission failure with a stable discriminator for the owning transport. */
 export class BrowserTaskScopeError extends Error {
@@ -73,11 +74,13 @@ interface AgentLifetime {
 interface Task<Resource> {
   readonly capability: BrowserTaskScopeCapability
   readonly owner: AgentLifetime
+  readonly activity: AgentActivity
   readonly metadata: BrowserTaskScope
   readonly callerSignal: AbortSignal
   readonly abort: AbortController
   readonly pending: Set<Promise<void>>
   readonly onAbort: () => void
+  readonly onActivityAbort: () => void
   state: 'pending' | 'admitted' | 'revoked' | 'disposed'
   resource: { kind: 'absent' } | { kind: 'acquired'; value: Resource }
   rejection?: BrowserTaskScopeError
@@ -94,6 +97,8 @@ export class BrowserTaskScopeRegistry<Resource> {
   readonly #providerEpoch = randomUUID()
   readonly #agents = new Map<Agent, AgentLifetime>()
   readonly #tasks = new Map<BrowserTaskScopeCapability, Task<Resource>>()
+  readonly #activityOwners = new WeakMap<AgentActivity, Agent>()
+  readonly #activityDrains = new WeakMap<AgentActivity, { readonly agent: Agent; readonly promise: Promise<void> }>()
   #disposed = false
   #disposal: Promise<void> | undefined
 
@@ -118,24 +123,32 @@ export class BrowserTaskScopeRegistry<Resource> {
     if (exec.signal.aborted) throw new BrowserTaskScopeError('ABORTED')
     let owner = this.#agents.get(agent)
     if (owner?.retired) throw new BrowserTaskScopeError('AGENT_RETIRED')
+    const activity = agent.activity
+    if (activity === undefined || activity === null) throw new BrowserTaskScopeError('ACTIVITY_REQUIRED')
+    if (activity.signal.aborted || this.#activityDrains.has(activity)) throw new BrowserTaskScopeError('ACTIVITY_RETIRED')
+    const activityOwner = this.#activityOwners.get(activity)
+    if (activityOwner !== undefined && activityOwner !== agent) throw new BrowserTaskScopeError('INVALID_SCOPE')
+    this.#activityOwners.set(activity, agent)
     if (owner === undefined) {
       owner = { agent, epoch: randomUUID(), retired: false }
       this.#agents.set(agent, owner)
     }
     const capability = Object.freeze({}) as BrowserTaskScopeCapability
     const task: Task<Resource> = {
-      capability, owner,
+      capability, owner, activity,
       metadata: Object.freeze({
         runEpoch: this.runEpoch, providerEpoch: this.#providerEpoch,
         agentEpoch: owner.epoch, taskId: randomUUID(), taskEpoch: randomUUID(), sessionId: agent.session.id,
       }),
       callerSignal: exec.signal, abort: new AbortController(), pending: new Set(),
       onAbort: () => { this.#revoke([task], new BrowserTaskScopeError('ABORTED')) },
+      onActivityAbort: () => { this.#revoke([task], new BrowserTaskScopeError('ACTIVITY_RETIRED')) },
       state: 'pending', resource: { kind: 'absent' },
     }
     this.#tasks.set(capability, task)
     const complete = this.#reserve(task)
     exec.signal.addEventListener('abort', task.onAbort, { once: true })
+    activity.signal.addEventListener('abort', task.onActivityAbort, { once: true })
     return this.#acquire(task, complete)
   }
 
@@ -204,9 +217,36 @@ export class BrowserTaskScopeRegistry<Resource> {
   }
 
   /**
+   * Close one activity's admission before callbacks, then join all its resources.
+   * Bind this to the scoped parallel agent/activity-draining event. The same Agent
+   * may admit fresh tasks only under a different activity identity afterwards.
+   * @param agent - exact Agent from the lifecycle event, not a caller-supplied id.
+   * @param activity - exact retiring activity, never serialized or reconstructed.
+   * @returns a shared drain, including failures already settled during abort.
+   */
+  revokeActivityAndDrain(agent: Agent, activity: AgentActivity): Promise<void> {
+    const owner = this.#activityOwners.get(activity)
+    if (owner === undefined) {
+      if (this.ports.agents.get(agent.id) !== agent || agent.activity !== activity) throw new BrowserTaskScopeError('INVALID_SCOPE')
+      this.#activityOwners.set(activity, agent)
+    } else if (owner !== agent) throw new BrowserTaskScopeError('INVALID_SCOPE')
+    const existing = this.#activityDrains.get(activity)
+    if (existing !== undefined) {
+      if (existing.agent !== agent) throw new BrowserTaskScopeError('INVALID_SCOPE')
+      return existing.promise
+    }
+    const done = Promise.withResolvers<void>()
+    this.#activityDrains.set(activity, { agent, promise: done.promise })
+    this.#observeCleanup(done.promise)
+    const tasks = [...this.#tasks.values()].filter(task => task.owner.agent === agent && task.activity === activity)
+    this.#revoke(tasks, new BrowserTaskScopeError('ACTIVITY_RETIRED'))
+    this.#join(tasks.map(task => this.#cleanup(task))).then(done.resolve, done.reject)
+    return done.promise
+  }
+
+  /**
    * Permanently retire one exact Agent before invoking cancellation callbacks.
-   * Must be awaited by the Agent lifecycle owner before idle/disposal publication;
-   * no existing complete lifecycle hook currently invokes it.
+   * Use only for actual destruction; ordinary idle uses revokeActivityAndDrain.
    * @param agent - exact Agent owned by the retiring lifetime, not a Session id.
    * @returns joined drain of all its tasks, retaining all cleanup failures.
    */
@@ -262,6 +302,11 @@ export class BrowserTaskScopeRegistry<Resource> {
       void this.revokeAgentAndDrain(task.owner.agent)
       throw new BrowserTaskScopeError('AGENT_RETIRED')
     }
+    if (task.owner.agent.activity !== task.activity || task.activity.signal.aborted || this.#activityDrains.has(task.activity)) {
+      const rejection = new BrowserTaskScopeError('ACTIVITY_RETIRED')
+      this.#revoke([task], rejection)
+      throw rejection
+    }
     if (task.callerSignal.aborted) {
       const rejection = new BrowserTaskScopeError('ABORTED')
       this.#revoke([task], rejection)
@@ -313,6 +358,7 @@ export class BrowserTaskScopeRegistry<Resource> {
     }
     for (const { task, done } of started) {
       task.callerSignal.removeEventListener('abort', task.onAbort)
+      task.activity.signal.removeEventListener('abort', task.onActivityAbort)
       task.abort.abort(rejection)
       this.#release(task).then(done.resolve, done.reject)
     }

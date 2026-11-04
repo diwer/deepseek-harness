@@ -11,6 +11,7 @@ import { isAbsolute, resolve } from 'node:path'
 import type {} from '@deepseek-ai/dsh-working-directory'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, AgentOptions, CreateAgentOptions } from '@deepseek-ai/dsh-agent'
+import { AgentActivityBusyError } from '@deepseek-ai/dsh-agent'
 import { brandString } from '@deepseek-ai/dsh-brand'
 import { ReasoningEffortId, contentHasImage, createUserMessage, errorChain } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, MessageId, MessageSource } from '@deepseek-ai/dsh-llm'
@@ -1066,12 +1067,17 @@ export class SubagentManager {
           }
           let done!: Promise<void>
           try {
-            void activation.handle.agent.runMaintenance(() => {
+            const maintenance = activation.handle.agent.runMaintenance(() => {
               done = this.close(activation, () => this.finishDisposal(activation, false))
               return Promise.resolve()
             })
-          } catch (_error: unknown) {
-            // Another activity already owns the Agent's idle phase.
+            // Handle disposal joins this maintenance activity; its task must not await the shared close.
+            done = Promise.allSettled([done, maintenance]).then(([closing, retired]) => {
+              if (closing.status === 'rejected') throw closing.reason
+              if (retired.status === 'rejected') throw retired.reason
+            })
+          } catch (error: unknown) {
+            if (!(error instanceof AgentActivityBusyError)) throw error
             return Promise.resolve('retry')
           }
           return Promise.resolve({ done })
@@ -1088,7 +1094,15 @@ export class SubagentManager {
         }
         return
       }
-    })()
+    })().catch(async (error: unknown) => {
+      let failure = error
+      try {
+        await this.close(activation, () => this.finishDisposal(activation, true, 'aborted'))
+      } catch (disposeError: unknown) {
+        failure = disposeError
+      }
+      this.reportTeardownFailure(activation, failure)
+    })
   }
 
   /** Report disposal failure once after the natural settlement observer finishes. */
@@ -1109,8 +1123,11 @@ export class SubagentManager {
     return 'ready'
   }
 
-  /** Propagate stop synchronously and await descendant startup rollback before release. */
-  private async finishDisposal(activation: Activation, stop: boolean): Promise<void> {
+  /**
+   * Propagate stop synchronously and join descendant startup rollback before release.
+   * Failed monitoring forbids a completed local result.
+   */
+  private async finishDisposal(activation: Activation, stop: boolean, settlementStop?: 'aborted'): Promise<void> {
     this.wake(activation)
     const { childId } = activation
     const failures: SubagentError[] = []
@@ -1134,6 +1151,8 @@ export class SubagentManager {
         if (stop) {
           activation.handle.agent.cancel({ kind: 'parent' })
           const idle = activation.handle.agent.whenIdle()
+          // Quiescence may reject while descendants are closing; retain it for the later join.
+          void idle.catch(() => undefined)
           const children = [...activation.ownedChildren]
             .map(child => this.resident.get(child))
             .filter((child): child is Activation => child !== undefined)
@@ -1160,6 +1179,9 @@ export class SubagentManager {
           await this.flushFinalState(activation)
         }
         result = captureLocalResult(activation)
+        if (settlementStop !== undefined && result.stopReason === 'completed') {
+          result = { ...result, stopReason: settlementStop }
+        }
       }
     } catch (error: unknown) {
       resultFailure = { error }
@@ -1197,8 +1219,9 @@ export class SubagentManager {
     this.notifySettlement(activation, result)
     this.releaseOwnership(childId)
     activation.observer.settle(terminal)
-    if (resultFailure === undefined) activation.result.resolve(result)
-    else activation.result.reject(resultFailure.error)
+    if (resultFailure !== undefined) activation.result.reject(resultFailure.error)
+    else if (failure !== undefined && activation.kind === 'local') activation.result.reject(failure)
+    else activation.result.resolve(result)
     if (failure !== undefined) throw failure
   }
 

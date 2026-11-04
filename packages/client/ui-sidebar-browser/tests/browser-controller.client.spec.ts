@@ -22,11 +22,11 @@ function lifetime(): AbortController {
   return controller
 }
 
-function harness() {
+function harness(createPage: BrowserPageFactory = createIframePage) {
   const id = `browser-controller-test-${String(++sequence)}`
   const store = createBrowserStore().create(id)
   let open = true
-  const face = createBrowserControllers(store.actions, createIframePage, () => open)
+  const face = createBrowserControllers(store.actions, createPage, () => open)
   disposables.push(face)
   const host = document.createElement('div')
   host.id = id
@@ -54,6 +54,31 @@ afterEach(async () => {
 })
 
 describe('BrowserController', () => {
+  it('passes exact occurrence identity to its factory without recreating it on remount', () => {
+    const factory = vi.fn(createIframePage)
+    const h = harness(factory)
+    const first = lifetime()
+    h.mount(first.signal)()
+    h.mount(first.signal)()
+    expect(factory).toHaveBeenCalledTimes(1)
+    expect(factory.mock.calls[0]![0].tabId).toBe(TAB)
+    expect(factory.mock.calls[0]![0].signal).toBe(first.signal)
+
+    const replacement = lifetime()
+    h.mount(replacement.signal)()
+    expect(factory).toHaveBeenCalledTimes(2)
+    expect(factory.mock.calls[1]![0].tabId).toBe(TAB)
+    expect(factory.mock.calls[1]![0].signal).toBe(replacement.signal)
+    first.abort()
+    h.mount(replacement.signal)()
+    expect(factory).toHaveBeenCalledTimes(2)
+
+    const ended = lifetime()
+    ended.abort()
+    h.mount(ended.signal)()
+    expect(factory).toHaveBeenCalledTimes(2)
+  })
+
   it('restores only on request and redirects saved checkpoints to a replacement binding', () => {
     const h = harness()
     const saved = browserAddressCheckpoint({ kind: 'https', url: 'https://saved.example/', title: 'Saved page' }, 2)

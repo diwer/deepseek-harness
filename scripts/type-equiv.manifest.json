@@ -209,6 +209,17 @@
     },
     {
       "doc": "docs/subsystems/core.md",
+      "symbol": "AgentActivity",
+      "source": "packages/core/agent/src/runtime-types.ts"
+    },
+    {
+      "doc": "docs/subsystems/core.md",
+      "symbol": "AgentActivityBusyError",
+      "source": "packages/core/agent/src/errors.ts",
+      "projection": "public-api"
+    },
+    {
+      "doc": "docs/subsystems/core.md",
       "symbol": "PreStepDecision",
       "source": "packages/core/agent/src/runtime-types.ts"
     },

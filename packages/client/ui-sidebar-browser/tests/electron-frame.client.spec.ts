@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { expect, it, vi } from 'vitest'
+import type { TabId } from '@deepseek-ai/dsh-client-ui-dockkit'
 import { ElectronWebViewImpl } from '../src/client/electron/ElectronWebViewImpl.ts'
 import { ElectronWebviewPresentation, type WebviewElement } from '../src/client/electron/ElectronWebviewPresentation.ts'
 import type { DesktopBrowserBridge, DesktopBrowserLeaseId } from '../src/types.ts'
@@ -17,7 +18,7 @@ it('clears a failed load when the main page retries without a toolbar command', 
     release: vi.fn(async () => {}), onOpenRequested: () => () => {},
   }
   const presentation = new ElectronWebviewPresentation({ mounted: () =>{  frame.attach() }, unmounted: () =>{  frame.detach() } })
-  const frame = new ElectronWebViewImpl({ initial: undefined, persist: vi.fn(), openRequested: vi.fn() },
+  const frame = new ElectronWebViewImpl({ tabId: 'electron-frame' as TabId, signal: new AbortController().signal, initial: undefined, persist: vi.fn(), openRequested: vi.fn() },
     bridge, async () => 'cwd:/workspace', presentation)
   const createElement = vi.spyOn(presentation, 'createElement').mockReturnValue(element)
   const host = document.createElement('div')

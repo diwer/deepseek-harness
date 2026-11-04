@@ -6,6 +6,7 @@
 
 import type {
   Agent,
+  AgentActivity,
   AgentCancelCause,
   AgentEventDispatch,
   AgentOptions,
@@ -18,7 +19,7 @@ import type {
   PreStepDecision,
   RequestErrorAction,
 } from '@deepseek-ai/dsh-agent'
-import { AgentModel, agentEvents, assembleContextFor } from '@deepseek-ai/dsh-agent'
+import { AgentActivityBusyError, AgentModel, agentEvents, assembleContextFor } from '@deepseek-ai/dsh-agent'
 import type { GenerateOptions, LlmCallConfig, Message, PreparedLlmCall } from '@deepseek-ai/dsh-llm'
 import {
   LlmError,
@@ -50,15 +51,22 @@ interface LoopProjections {
   readonly inbox: () => InboxState
 }
 
-type Phase =
-  | { kind: 'idle'; lastTurn: number }
-  | {
-    kind: 'maintenance'
-    abort: AbortController
-    lastTurn: number
-    wakeRequested: boolean
-  }
-  | { kind: 'running'; abort: AbortController; turn: number; step: number; wakeRequested: boolean }
+interface ActivityState {
+  abort: AbortController
+  admission: AbortController
+  activity: AgentActivity
+  cancelCause?: AgentCancelCause
+  drainFailure?: { error: unknown }
+  disposed: boolean
+  wakeRequested: boolean
+}
+
+type ActivePhase = ActivityState & (
+  | { kind: 'maintenance'; lastTurn: number }
+  | { kind: 'running'; turn: number; step: number }
+)
+
+type Phase = { kind: 'idle'; lastTurn: number } | ActivePhase
 
 type StepEndReason = Extract<TurnEndReason, { kind: 'completed' | 'max-tokens' }>
 
@@ -114,6 +122,8 @@ export class ReactLoopAgent implements Agent {
   readonly inbox: ReactLoopInbox
   private phase: Phase
   private activityDone: Promise<void> = Promise.resolve()
+  private disposalRequested = false
+  private idleWakeSuppressed = false
 
   /** The agent-scoped registration boundary; the lifecycle owner unwinds it after the driver exits. */
   readonly scope: Scope
@@ -157,6 +167,31 @@ export class ReactLoopAgent implements Agent {
     return this.phase.kind === 'idle' || this.phase.kind === 'maintenance' ? 'idle' : 'running'
   }
 
+  get activity(): AgentActivity | null {
+    return this.phase.kind === 'idle' ? null : this.phase.activity
+  }
+
+  /** Reserve quiescence before publishing a phase or invoking user callbacks. */
+  private reserveActivity(): ReturnType<typeof Promise.withResolvers<void>> {
+    const done = Promise.withResolvers<void>()
+    this.activityDone = done.promise
+    // Keep the original rejection observable through whenIdle/disposal without
+    // an unhandled rejection when nobody is currently waiting for quiescence.
+    void done.promise.catch((_error: unknown) => {})
+    return done
+  }
+
+  private newActivity(): ActivityState {
+    const admission = new AbortController()
+    return {
+      abort: new AbortController(),
+      admission,
+      activity: Object.freeze({ signal: admission.signal }),
+      disposed: false,
+      wakeRequested: false,
+    }
+  }
+
   /** Commit a phase and publish its externally visible status transition. */
   private setPhase(next: Phase): void {
     const previousStatus = this.status
@@ -170,10 +205,10 @@ export class ReactLoopAgent implements Agent {
   send(message: UserMessage, target: InboxTarget, wakeup: boolean): void {
     // Waking input cannot join an aborted activity, so it starts the next turn.
     // Captured before the insertion so a reentrant cancel from a splice observer cannot reclassify it.
-    const wakingAfterAbort = wakeup && this.phase.kind !== 'idle' && this.phase.abort.signal.aborted
+    const wakingAfterAbort = wakeup && this.phase.kind !== 'idle' && this.phase.admission.signal.aborted
     const resolvedTarget = wakingAfterAbort ? 'next-turn' : target
     this.inbox.splice(resolvedTarget, Infinity, 0, [message])
-    if (wakeup) this.wakeDriver(wakingAfterAbort)
+    if (wakeup) this.wakeDriver()
   }
 
   followup(input: UserMessage): void {
@@ -188,35 +223,79 @@ export class ReactLoopAgent implements Agent {
     this.send(input, 'next-step', false)
   }
 
+  /**
+   * Permanently close this concrete handle before teardown invokes callbacks.
+   * @param options - whether initialization must retain queued input.
+   */
+  beginDisposal(options: CancelOptions): void {
+    this.disposalRequested = true
+    this.cancel({ kind: 'disposed' }, options)
+  }
+
   cancel(cause: AgentCancelCause, options: CancelOptions = {}): void {
-    if (!options.keepInbox) {
-      this.inbox.clear()
-      if (this.phase.kind !== 'idle') this.phase.wakeRequested = false
+    // Cancellation owns only the captured activity, not work started by its callbacks.
+    const phase = this.phase
+    if (phase.kind !== 'idle') {
+      phase.cancelCause ??= cause
+      if (cause.kind === 'disposed') phase.disposed = true
+      if (!options.keepInbox) phase.wakeRequested = false
+      phase.admission.abort()
     }
-    if (this.phase.kind !== 'idle') this.phase.abort.abort(cause)
+    if (!options.keepInbox) this.inbox.clear()
+    if (phase.kind !== 'idle') phase.abort.abort(phase.cancelCause)
   }
 
   runMaintenance<T>(job: (signal: AbortSignal) => Promise<T>): Promise<T> {
-    if (this.phase.kind !== 'idle') throw new Error(`agent "${this.id}" already has active work`)
-    const done = Promise.withResolvers<void>()
-    const maintenance: Phase = {
+    if (this.disposalRequested || this.idleWakeSuppressed) throw new Error(`agent "${this.id}" is disposing`)
+    if (this.phase.kind !== 'idle') {
+      if (this.phase.drainFailure !== undefined) throw this.phase.drainFailure.error
+      throw new AgentActivityBusyError(this.id)
+    }
+    const done = this.reserveActivity()
+    const maintenance: ActivePhase = {
+      ...this.newActivity(),
       kind: 'maintenance',
-      abort: new AbortController(),
       lastTurn: this.phase.lastTurn,
-      wakeRequested: false,
     }
     this.setPhase(maintenance)
-    this.activityDone = done.promise
     return (async () => {
+      let outcome: { ok: true; value: T } | { ok: false; error: unknown }
       try {
-        return await job(maintenance.abort.signal)
-      } finally {
-        this.setPhase({ kind: 'idle', lastTurn: maintenance.lastTurn })
-        const cause = abortedCancelCause(maintenance.abort.signal)
-        if (cause?.kind !== 'disposed' && maintenance.wakeRequested && this.inbox.hasPending) this.wakeDriver()
-        done.resolve()
+        outcome = { ok: true, value: await job(maintenance.abort.signal) }
+      } catch (error: unknown) {
+        outcome = { ok: false, error }
       }
+      try {
+        await this.drainActivity(maintenance)
+      } catch (error: unknown) {
+        const failure = outcome.ok ? error : new AggregateError([outcome.error, error], 'Maintenance and activity drainage failed')
+        done.reject(failure)
+        throw failure
+      }
+      done.resolve()
+      if (!outcome.ok) throw outcome.error
+      return outcome.value
     })()
+  }
+
+  /** Close admission and join resource owners before publishing idle or replaying input. */
+  private async drainActivity(phase: ActivePhase): Promise<void> {
+    phase.admission.abort()
+    try {
+      await this.dispatch.parallel('agent/activity-draining', { activity: phase.activity })
+    } catch (error: unknown) {
+      phase.drainFailure = { error }
+      this.throwError(error)
+    }
+    // A disposed-cause cancel suppresses reentry only through this activity's
+    // idle callbacks; actual handle teardown closes admission permanently.
+    this.idleWakeSuppressed = phase.disposed
+    try {
+      this.setPhase({ kind: 'idle', lastTurn: phase.kind === 'running' ? phase.turn : phase.lastTurn })
+    } finally {
+      this.idleWakeSuppressed = false
+    }
+    if (!this.disposalRequested && !phase.disposed && phase.wakeRequested && this.inbox.hasPending) this.wakeDriver()
   }
 
   /**
@@ -227,25 +306,22 @@ export class ReactLoopAgent implements Agent {
    * @param wakeAfterAbort - the {@link send} classification, captured before
    *   the inbox insertion so a reentrant cancel cannot reclassify it.
    */
-  private wakeDriver(wakeAfterAbort = false): void {
+  private wakeDriver(): void {
+    if (this.disposalRequested || this.idleWakeSuppressed) return
     if (this.phase.kind !== 'idle') {
-      // Maintenance and aborted drivers cannot deliver the wake: latch it for
-      // replay at convergence. Live drivers claim queued work themselves;
-      // disposal never latches, so teardown waits on no model turn.
-      const reason = abortedCancelCause(this.phase.abort.signal)
-      if (reason?.kind !== 'disposed' && (this.phase.kind === 'maintenance' || wakeAfterAbort)) {
+      // Closing activities cannot deliver input; successful drainage releases
+      // at most one replacement driver for their pending waking input.
+      if (this.phase.kind === 'maintenance' || this.phase.admission.signal.aborted) {
         this.phase.wakeRequested = true
       }
       return
     }
-    const driver = Promise.withResolvers<void>()
-    this.activityDone = driver.promise
+    const driver = this.reserveActivity()
     this.setPhase({
+      ...this.newActivity(),
       kind: 'running',
-      abort: new AbortController(),
       turn: this.phase.lastTurn,
       step: 0,
-      wakeRequested: false,
     })
     this.loopCtx.agents.withInitiator(this, () => this.kick()).then(driver.resolve, driver.reject)
   }
@@ -266,17 +342,21 @@ export class ReactLoopAgent implements Agent {
   }
 
   private async kick(): Promise<void> {
+    const failures: unknown[] = []
     try {
       while (await this.turn()) {}
-    } catch (_error) {
-      // Reported failures and cancellation are contained at the driver boundary.
-    } finally {
-      /* v8 ignore next -- kick owns a running phase until this driver boundary */
-      if (this.phase.kind === 'running') {
-        const { turn, wakeRequested } = this.phase
-        this.setPhase({ kind: 'idle', lastTurn: turn })
-        if (wakeRequested && this.inbox.hasPending) this.wakeDriver()
-      }
+    } catch (error: unknown) {
+      // Ordinary operation failures stay reported and contained; if retirement
+      // also fails, quiescence must retain both failures instead of masking one.
+      failures.push(error)
+    }
+    /* v8 ignore next -- kick owns a running phase until this driver retires */
+    if (this.phase.kind !== 'running') throw new Error(`agent "${this.id}": driver lost its active phase`)
+    try {
+      await this.drainActivity(this.phase)
+    } catch (error: unknown) {
+      if (failures.length > 0) throw new AggregateError([...failures, error], 'Driver and activity drainage failed')
+      throw error
     }
   }
 
@@ -424,7 +504,7 @@ export class ReactLoopAgent implements Agent {
         this.throwError(error)
       }
     }
-    if (!this.inbox.hasPending) return false
+    if (phase.admission.signal.aborted || !this.inbox.hasPending) return false
     phase.abort = new AbortController()
     // A fresh controller makes a latch set on the old one stale: the live driver claims the queue itself.
     phase.wakeRequested = false

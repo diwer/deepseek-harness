@@ -46,7 +46,7 @@ import type { SidebarRightDestination } from './contract/slots.ts'
 import type { SidebarRightTabClaim, SidebarRightTabRegistry } from './tab-registry.ts'
 import { canCloseTab, findHostContentTab, type SidebarRightState, type SurfaceState } from './stores.ts'
 import type { createSidebarRightStore } from './stores.ts'
-import { TabDomain, type PinResource } from './tab-domain.ts'
+import { TabDomain, type PinResource, type TabOccurrence } from './tab-domain.ts'
 import { SidebarTabInventory } from './tab-inventory.ts'
 
 /** The seat's bound action set. */
@@ -80,6 +80,8 @@ interface SidebarRightSessions {
   readonly openTabs: SidebarTabInventory['source']
   /** Each Session's flash source, created on first use and released when the Session is forgotten. */
   readonly flashes: Map<SessionId, SnapshotStore<SidebarRightFlash | undefined>>
+  readonly closeHandlers: Map<string, SidebarRightCloseHandler>
+  readonly remove: (sessionId: SessionId, tab: TabRecord, commit: () => void) => void | Promise<void>
 }
 
 /**
@@ -96,15 +98,57 @@ export function createSidebarRightController(tabs: SidebarRightTabRegistry, pin:
   forget: (sessionId: SessionId) => void
   show: (sessionId: SessionId | undefined) => void
   measure: (sessionId: SessionId, canSplitPane: RoomRule) => void
+  removePrepared: (store: SidebarRightSurfaceStore, tab: TabRecord, occurrence: TabOccurrence) => Promise<void>
 } {
   const adopted = new Map<SessionId, Adoption>()
   const rooms = new Map<SessionId, RoomRule>()
   const onScreen = createSnapshotStore<SessionId | undefined>(undefined)
   const inventory = new SidebarTabInventory()
   const flashes = new Map<SessionId, SnapshotStore<SidebarRightFlash | undefined>>()
-  const controller = new SidebarRightController(tabs, pin, host, { adopted, rooms, onScreen, openTabs: inventory.source, flashes })
+  const closeHandlers = new Map<string, SidebarRightCloseHandler>()
+  const removals = new Map<TabOccurrence, Promise<void>>()
+  const remove = (sessionId: SessionId, tab: TabRecord, commit: () => void): void | Promise<void> => {
+    const adoption = adopted.get(sessionId)
+    if (adoption === undefined) return
+    const occurrence = controller.tabDomain.occurrence(sessionId, tab)
+    const pending = removals.get(occurrence)
+    if (pending !== undefined) return pending
+    const current = (): boolean => adopted.get(sessionId) === adoption
+      && adoption.store.getSnapshot().bySession[sessionId]?.layout.tabs[tab.id] === tab
+      && controller.tabDomain.isCurrent(occurrence)
+    const completion = Promise.withResolvers<void>()
+    // Reentrant close/release joins this exact cleanup, including during abort observers.
+    removals.set(occurrence, completion.promise)
+    void completion.promise.catch(() => {}) // Sync failures are thrown; async callers own reporting.
+    const finish = (): void => { if (current()) commit() }
+    try {
+      controller.tabDomain.revoke(occurrence)
+      const cleanup = current() ? closeHandlers.get(tab.kind)?.(sessionId, tab) : undefined
+      if (cleanup !== undefined) {
+        void cleanup.then(finish).then(completion.resolve, completion.reject).finally(() => { removals.delete(occurrence) })
+        return completion.promise
+      }
+      finish()
+      completion.resolve()
+      removals.delete(occurrence)
+    } catch (error) {
+      completion.reject(error)
+      removals.delete(occurrence)
+      throw error
+    }
+  }
+  const controller = new SidebarRightController(tabs, pin, host,
+    { adopted, rooms, onScreen, openTabs: inventory.source, flashes, closeHandlers, remove })
   return {
     controller,
+    async removePrepared(store, tab, occurrence) {
+      const sessionId = occurrence.sessionId
+      const pending = removals.get(occurrence)
+      if (pending !== undefined) { await pending; return }
+      if (adopted.get(sessionId)?.store !== store || !controller.tabDomain.isCurrent(occurrence)
+        || store.getSnapshot().bySession[sessionId]?.layout.tabs[tab.id] !== tab) return
+      await remove(sessionId, tab, () => { store.actions.discardPrepared(sessionId, tab.id) })
+    },
     forget: (sessionId) => {
       inventory.remove(sessionId)
       rooms.delete(sessionId)
@@ -230,8 +274,8 @@ export interface SidebarRightFlash {
   readonly serial: number
 }
 
-/** Synchronous close/replacement hook; resource owners retain any background cleanup. */
-export type SidebarRightCloseHandler = (sessionId: SessionId, tab: TabRecord) => void
+/** Close/replacement hook; asynchronous cleanup delays exact-record removal and is awaited by private release. */
+export type SidebarRightCloseHandler = (sessionId: SessionId, tab: TabRecord) => void | Promise<void>
 
 /** The outward right-Sidebar face (`ctx.sidebarRight`). */
 export interface ISidebarRight {
@@ -326,7 +370,8 @@ export class SidebarRightController implements ISidebarRight {
   readonly mounted: ObservableSnapshot<SessionId | undefined>
   private readonly adopted: ReadonlyMap<SessionId, Adoption>
   private readonly rooms: ReadonlyMap<SessionId, RoomRule>
-  private readonly closeHandlers = new Map<string, SidebarRightCloseHandler>()
+  private readonly closeHandlers: Map<string, SidebarRightCloseHandler>
+  private readonly remove: SidebarRightSessions['remove']
   private readonly flashes: Map<SessionId, SnapshotStore<SidebarRightFlash | undefined>>
 
   /**
@@ -364,6 +409,8 @@ export class SidebarRightController implements ISidebarRight {
     this.mounted = sessions.onScreen
     this.openTabs = sessions.openTabs
     this.flashes = sessions.flashes
+    this.closeHandlers = sessions.closeHandlers
+    this.remove = sessions.remove
     this.tabDomain = new TabDomain(this, pin)
   }
 
@@ -456,8 +503,8 @@ export class SidebarRightController implements ISidebarRight {
   }
 
   private removeAfterCleanup(sessionId: SessionId, tab: TabRecord, commit: () => void): void {
-    this.closeHandlers.get(tab.kind)?.(sessionId, tab)
-    commit()
+    const cleanup = this.remove(sessionId, tab, commit)
+    if (cleanup !== undefined) void cleanup.catch((error: unknown) => { console.error('Sidebar tab cleanup failed:', error) })
   }
 
   /** Claim a resource and place it in one session; an address outside the scheme or one no type claims throws. */
@@ -707,7 +754,8 @@ export class SidebarRightController implements ISidebarRight {
    * @returns whether this current page can be removed or its sole guide pane collapsed.
    */
   canCloseTarget(target: SidebarRightTarget): boolean {
-    return this.isTargetCurrent(target) && target.tabId !== undefined
+    // Revoked records still allow cleanup retry, but never refresh or navigation.
+    return this.matchesTarget(target) && target.tabId !== undefined
   }
 
   /**
@@ -717,7 +765,7 @@ export class SidebarRightController implements ISidebarRight {
    * @returns closed after removal or collapse, unavailable without a page, or stale after identity changes.
    */
   closeTarget(target: SidebarRightTarget): 'closed' | 'unavailable' | 'stale' {
-    if (!this.isTargetCurrent(target)) return 'stale'
+    if (!this.matchesTarget(target)) return 'stale'
     const surface = this.mountedSurface()
     if (surface === undefined || target.tabId === undefined) return 'unavailable'
     const tabId = target.tabId
@@ -735,6 +783,10 @@ export class SidebarRightController implements ISidebarRight {
    * @returns whether the on-screen Session, pane, tab lifetime and navigation still match.
    */
   isTargetCurrent(target: SidebarRightTarget): boolean {
+    return this.matchesTarget(target) && target.occurrence?.signal.aborted !== true
+  }
+
+  private matchesTarget(target: SidebarRightTarget): boolean {
     if (this.mounted.getSnapshot() !== target.sessionId) return false
     const layout = this.mountedSurface()?.layout
     const pane = layout?.nodes[target.paneId]
@@ -742,7 +794,7 @@ export class SidebarRightController implements ISidebarRight {
     if (target.tabId === undefined) return pane.activeTabId === undefined
     if (!pane.tabs.includes(target.tabId) || layout?.tabs[target.tabId] === undefined) return false
     const held = this.tabDomain.occurrence(target.sessionId, { id: target.tabId })
-    return held === target.occurrence && !held.signal.aborted
+    return held === target.occurrence && this.tabDomain.isCurrent(held)
       && held.navigation.getSnapshot().revision === target.navigationRevision
   }
 

@@ -495,62 +495,97 @@ export class AgentLoop extends Service implements AgentFactory {
     // Reverse teardown, memoized so every racing owner awaits one quiescence:
     // stop the machine, unwind the scope, drain and close the session's write
     // path, leave the registries, release bookkeeping.
-    const teardown = (): Promise<void> => (disposing ??= (async () => {
-      abort.abort(new Error(this.ownership.isActive()
-        ? `agent "${id}" lifecycle disposed`
-        : 'agent loop is not active'))
-      callerSignal?.removeEventListener('abort', onCallerAbort)
-      this.ownership.signal.removeEventListener('abort', onFactoryTeardown)
-      // Teardown failures are collected, never swallowed: registry, scope,
-      // and ownership cleanup always run to quiescence, then the memoized
-      // disposal rejects with what failed so every racing owner observes it.
-      const failures: unknown[] = []
-      try {
-        // Creation listeners retain the session and scope through their awaits.
-        if (publication !== undefined) await publication.promise
-        // Disposal IS a disposed-cause cancel followed by quiescence. New work
-        // sent after this point is the sender's bug — the registries are about
-        // to drop the agent, so nothing should still hold it.
-        /* v8 ignore next -- Cordis effect teardown waits for synchronous setup before observing the machine slot. */
-        if (machine === undefined) await machineReady.promise
-        /* v8 ignore next -- setup failure untracks this disposer before resolving without a machine. */
-        if (machine !== undefined) {
-          machine.cancel({ kind: 'disposed' }, { keepInbox: !ready })
-          await machine.whenIdle()
+    const teardown = (reason?: Error): Promise<void> => {
+      if (disposing !== undefined) return disposing
+      const done = Promise.withResolvers<void>()
+      disposing = done.promise
+      // Owner callbacks may reenter disposal synchronously from abort().
+      // Reserve the shared result before invoking any of them.
+      void done.promise.catch((_error: unknown) => {})
+      void (async () => {
+        const failures: unknown[] = []
+        const stopping = machine
+        try {
+          stopping?.beginDisposal({ keepInbox: !ready })
+        } catch (error: unknown) {
+          failures.push(error)
         }
-      } catch (error: unknown) {
-        failures.push(error)
-      }
-      try {
-        await machine?.scope.dispose()
-      } catch (error: unknown) {
-        failures.push(error)
-      }
-      // Close drains events already routed into the handle. The backend's
-      // live-event listeners must stay mounted through driver shutdown to
-      // receive all closing events. A failed final drain is retained here
-      // rather than logged away.
-      try {
-        await stored?.handle.close()
-      } catch (error: unknown) {
-        failures.push(error)
-      }
-      try {
-        detachAgent?.()
-        detachSession?.()
-      } finally {
+        abort.abort(reason ?? new Error(this.ownership.isActive()
+          ? `agent "${id}" lifecycle disposed`
+          : 'agent loop is not active'))
+        callerSignal?.removeEventListener('abort', onCallerAbort)
+        this.ownership.signal.removeEventListener('abort', onFactoryTeardown)
+        // Teardown failures are collected, never swallowed: registry, scope,
+        // and ownership cleanup always run to quiescence, then the memoized
+        // disposal rejects with what failed so every racing owner observes it.
+        try {
+          // Creation listeners retain the session and scope through their awaits.
+          if (publication !== undefined) await publication.promise
+          // A machine constructed after teardown started must also close admission.
+          /* v8 ignore next -- Cordis effect teardown waits for synchronous setup before observing the machine slot. */
+          if (machine === undefined) await machineReady.promise
+          /* v8 ignore next -- setup failure untracks this disposer before resolving without a machine. */
+          if (machine !== undefined) {
+            if (machine !== stopping) machine.beginDisposal({ keepInbox: !ready })
+            await machine.whenIdle()
+          }
+        } catch (error: unknown) {
+          failures.push(error)
+        }
+        try {
+          await machine?.scope.dispose()
+        } catch (error: unknown) {
+          failures.push(error)
+        }
+        // Close drains events already routed into the handle. The backend's
+        // live-event listeners must stay mounted through driver shutdown to
+        // receive all closing events. A failed final drain is retained here
+        // rather than logged away.
+        try {
+          await stored?.handle.close()
+        } catch (error: unknown) {
+          failures.push(error)
+        }
+        try {
+          detachAgent?.()
+        } catch (error: unknown) {
+          failures.push(error)
+        }
+        try {
+          detachSession?.()
+        } catch (error: unknown) {
+          failures.push(error)
+        }
         untrack()
-      }
-      throwCollectedFailures(failures, `agent "${id}" disposal failed`)
-    })())
+        throwCollectedFailures(failures, `agent "${id}" disposal failed`)
+      })().then(done.resolve, done.reject)
+      return done.promise
+    }
     let unfollowScope: (() => Promise<void> | void) | undefined
-    let unfollowOwner: () => Promise<void> | void
-    const dispose = async (): Promise<void> => {
-      try {
-        await teardown()
-      } finally {
-        await Promise.all([unfollowOwner(), unfollowScope?.()])
-      }
+    let unfollowOwner: (() => Promise<void> | void) | undefined
+    let disposalDone: Promise<void> | undefined
+    const dispose = (): Promise<void> => {
+      if (disposalDone !== undefined) return disposalDone
+      const done = Promise.withResolvers<void>()
+      disposalDone = done.promise
+      void done.promise.catch((_error: unknown) => {})
+      void (async () => {
+        const failures: unknown[] = []
+        try {
+          await teardown()
+        } catch (error: unknown) {
+          failures.push(error)
+        }
+        const results = await Promise.allSettled([
+          Promise.resolve().then(() => unfollowOwner?.()),
+          Promise.resolve().then(() => unfollowScope?.()),
+        ])
+        for (const result of results) {
+          if (result.status === 'rejected' && !failures.includes(result.reason)) failures.push(result.reason)
+        }
+        throwCollectedFailures(failures, `agent "${id}" disposal failed`)
+      })().then(done.resolve, done.reject)
+      return done.promise
     }
     const untrack = this.ownership.track(dispose)
     try {
@@ -585,9 +620,8 @@ export class AgentLoop extends Service implements AgentFactory {
           }, `agentLoop.scope(${id})`)
         }
         yield async () => {
-          abort.abort(new Error(`agent "${id}" setup aborted: owner disposed during setup`))
           try {
-            await teardown()
+            await teardown(new Error(`agent "${id}" setup aborted: owner disposed during setup`))
           } finally {
             await unfollowScope?.()
           }
@@ -595,12 +629,11 @@ export class AgentLoop extends Service implements AgentFactory {
       }, `agentLoop.lifecycle(${id})`)
     } catch (error: unknown) {
       machineReady.resolve()
-      untrack()
-      callerSignal?.removeEventListener('abort', onCallerAbort)
-      this.ownership.signal.removeEventListener('abort', onFactoryTeardown)
-      await stored?.handle.close().catch((_closeError: unknown) => {
-        // Initialization failure remains primary when releasing the acquired handle fails.
-      })
+      try {
+        await dispose()
+      } catch (_disposeError: unknown) {
+        // Initializer callers retain their primary failure after all teardown attempts settle.
+      }
       throw error
     }
 
@@ -612,6 +645,7 @@ export class AgentLoop extends Service implements AgentFactory {
       /* v8 ignore next -- unreachable String() arm, see above */
       throw abort.signal.reason instanceof Error ? abort.signal.reason : new Error(String(abort.signal.reason))
     }
+    let initializationFailure: { error: unknown } | undefined
     try {
       /* v8 ignore next -- a synchronous effect exhausts the generator before returning */
       if (machine === undefined) throw new Error(`agent "${id}" lifecycle did not construct its driver`)
@@ -639,8 +673,9 @@ export class AgentLoop extends Service implements AgentFactory {
           ready = true
           return { agent, dispose }
         } catch (error: unknown) {
-          // Failed initialization must not release queued input into a new turn.
-          agent.cancel({ kind: 'disposed' }, { keepInbox: true })
+          initializationFailure = { error }
+          // Reserve teardown before abort callbacks; publication releases it after this task exits.
+          void dispose()
           throw error
         } finally {
           publication.resolve()
@@ -648,10 +683,12 @@ export class AgentLoop extends Service implements AgentFactory {
         }
       })
     } catch (error: unknown) {
-      await dispose().catch((_disposeError: unknown) => {
-        // Initialization failure remains primary after cleanup reaches quiescence.
-      })
-      throw error
+      try {
+        await dispose()
+      } catch (_disposeError: unknown) {
+        // Initializer callers retain their primary failure after all teardown attempts settle.
+      }
+      throw initializationFailure === undefined ? error : initializationFailure.error
     }
   }
 

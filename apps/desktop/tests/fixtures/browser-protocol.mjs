@@ -6,6 +6,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { app, BrowserWindow, nativeImage, session } from 'electron'
 import { DesktopBrowserGuests } from '../../lib/types/browser-guests.js'
+import { installDesktopShortcuts } from '../../lib/types/keyboard.js'
 
 const root = process.env.DSH_BROWSER_PROTOCOL_TEST_ROOT
 const origin = process.env.DSH_BROWSER_PROTOCOL_TEST_ORIGIN
@@ -159,6 +160,137 @@ async function main() {
         }
         return observations
       }
+      async function qualifyIgnoreInputEvents() {
+        const savedPrevent = prevent
+        const savedPhase = phase
+        const observation = { artificialGateOpen: true, steps: [] }
+        result.ignoreInputEvents = observation
+        prevent = false
+        try {
+          for (const step of [
+            { phase: 'before', ignore: false },
+            { phase: 'ignored', ignore: true },
+            { phase: 'restored', ignore: false },
+          ]) {
+            await protocol('Input.setIgnoreInputEvents', { ignore: step.ignore })
+            const sample = { ...step, before: await state() }
+            observation.steps.push(sample)
+            for (const route of ['cdp', 'sendInputEvent']) {
+              phase = `ignore-input:${step.phase}:${route}:mouse`
+              await evaluate('window.probe.reset()')
+              const mouseStart = native.length
+              if (route === 'cdp') await click(80, 64)
+              else {
+                guest.sendInputEvent({ type: 'mouseDown', x: 80, y: 64, button: 'left', clickCount: 1 })
+                guest.sendInputEvent({ type: 'mouseUp', x: 80, y: 64, button: 'left', clickCount: 1 })
+              }
+              const mouse = { dom: await evaluate('window.probe.read()'), native: native.slice(mouseStart), state: await state() }
+              const keys = []
+              sample[route] = { mouse, keys }
+              for (const variant of route === 'cdp'
+                ? ['keyDown-with-text', 'rawKeyDown-plus-char', 'keyDown-without-text'] : ['keyDown-plus-char']) {
+                phase = `ignore-input:${step.phase}:${route}:${variant}`
+                await evaluate('window.probe.reset(); document.querySelector("#entry").focus()')
+                const keyStart = native.length
+                if (route === 'cdp') await key('i', variant)
+                else {
+                  guest.sendInputEvent({ type: 'keyDown', keyCode: 'X' })
+                  guest.sendInputEvent({ type: 'char', keyCode: 'x' })
+                  guest.sendInputEvent({ type: 'keyUp', keyCode: 'X' })
+                }
+                const dom = await evaluate('window.probe.read()')
+                const fullKeyEventCounts = Object.fromEntries(['keydown', 'keyup'].map(type => [type, dom.events.filter(event => event.type === type).length]))
+                keys.push({ variant, dom, fullKeyEventCounts, native: native.slice(keyStart), state: await state() })
+              }
+            }
+          }
+        } finally {
+          try {
+            await protocol('Input.setIgnoreInputEvents', { ignore: false })
+          } finally {
+            prevent = savedPrevent
+            phase = savedPhase
+            await evaluate('window.probe.reset(); document.querySelector("#entry").focus()')
+          }
+          observation.restored = { ignore: false, prevent, state: await state() }
+        }
+      }
+      async function qualifyProductionShortcuts() {
+        const savedPrevent = prevent
+        const savedPhase = phase
+        const overlay = { revision: 0, blocked: false }
+        const platform = process.platform === 'darwin' ? 'macos' : process.platform === 'win32' ? 'windows' : 'linux'
+        const nativeEvents = []
+        const listenersBefore = { key: guest.listenerCount('before-input-event'), mouse: guest.listenerCount('before-mouse-event') }
+        const observation = { implementation: 'existing lib/types/keyboard.js installDesktopShortcuts(...).attachGuest',
+          artificialGateOpen: true, ignoreInputEvents: false, platform, privateUserData: app.getPath('userData'),
+          configurationIPCInvoked: false, taskAuthorityQualified: false, steps: [], native: nativeEvents, cleanup: false }
+        result.productionShortcuts = observation
+        let shortcuts
+        let releaseInput
+        const observeKey = (event, input) => nativeEvents.push({ phase, source: 'before-input-event',
+          prevented: event.defaultPrevented, syntheticPrevent: prevent, overlayBlocked: overlay.blocked,
+          type: input.type, key: input.key, code: input.code, modifiers: input.modifiers,
+          isAutoRepeat: input.isAutoRepeat, isComposing: input.isComposing })
+        const observeMouse = (event, input) => nativeEvents.push({ phase, source: 'before-mouse-event',
+          prevented: event.defaultPrevented, syntheticPrevent: prevent, overlayBlocked: overlay.blocked,
+          type: input.type, x: input.x, y: input.y, button: input.button, clickCount: input.clickCount })
+        prevent = false
+        try {
+          await protocol('Input.setIgnoreInputEvents', { ignore: false })
+          shortcuts = installDesktopShortcuts(() => owner, app.getPath('userData'), platform, () => {}, window => {
+            assert.equal(window, owner, 'production shortcuts must read only the owned overlay state')
+            return overlay
+          })
+          releaseInput = shortcuts.attachGuest(owner, guest, reservation.lease)
+          assert.equal(guest.listenerCount('before-input-event'), listenersBefore.key + 1)
+          // Observe prevention after the actual production listener, without changing its behavior.
+          guest.on('before-input-event', observeKey)
+          guest.on('before-mouse-event', observeMouse)
+          for (const step of [
+            { phase: 'before', blocked: false },
+            { phase: 'blocked', blocked: true },
+            { phase: 'restored', blocked: false },
+          ]) {
+            overlay.blocked = step.blocked
+            overlay.revision++
+            assert.equal(prevent, false, 'the synthetic gate must stay open during production qualification')
+            const sample = { ...step, overlayRevision: overlay.revision, syntheticPrevent: prevent, before: await state() }
+            observation.steps.push(sample)
+            phase = `production-shortcuts:${step.phase}:mouse`
+            await evaluate('window.probe.reset()')
+            const mouseStart = nativeEvents.length
+            await click(80, 64)
+            sample.mouse = { dom: await evaluate('window.probe.read()'), native: nativeEvents.slice(mouseStart), state: await state() }
+            sample.keys = []
+            for (const variant of ['keyDown-with-text', 'rawKeyDown-plus-char', 'keyDown-without-text']) {
+              phase = `production-shortcuts:${step.phase}:${variant}`
+              await evaluate('window.probe.reset(); document.querySelector("#entry").focus()')
+              const keyStart = nativeEvents.length
+              await key('i', variant)
+              const dom = await evaluate('window.probe.read()')
+              const fullKeyEventCounts = Object.fromEntries(['keydown', 'keyup'].map(type => [type, dom.events.filter(event => event.type === type).length]))
+              sample.keys.push({ variant, dom, fullKeyEventCounts, native: nativeEvents.slice(keyStart), state: await state() })
+            }
+          }
+        } finally {
+          try {
+            if (releaseInput) releaseInput()
+          } finally {
+            guest.off('before-input-event', observeKey)
+            guest.off('before-mouse-event', observeMouse)
+            shortcuts?.dispose()
+            overlay.blocked = false
+            prevent = savedPrevent
+            phase = savedPhase
+            await evaluate('window.probe.reset(); document.querySelector("#entry").focus()')
+            const listenersAfter = { key: guest.listenerCount('before-input-event'), mouse: guest.listenerCount('before-mouse-event') }
+            assert.deepEqual(listenersAfter, listenersBefore, 'production input and observation listeners must be removed')
+            observation.restored = { overlayBlocked: overlay.blocked, prevent, listenersBefore, listenersAfter, state: await state() }
+            observation.cleanup = true
+          }
+        }
+      }
       phase = 'initial-key-without-focus-emulation'
       await evaluate('document.querySelector("#entry").focus()')
       await key('z')
@@ -204,6 +336,10 @@ async function main() {
       guest.sendInputEvent({ type: 'char', keyCode: 'x' })
       guest.sendInputEvent({ type: 'keyUp', keyCode: 'X' })
       result.nativeControl = { dom: await evaluate('window.probe.read()'), events: native.slice(nativeStart) }
+      if (scenario.captures === 'both') {
+        await qualifyIgnoreInputEvents()
+        await qualifyProductionShortcuts()
+      }
       result.closedGateAlternatives = await closedGateAlternatives('with-focus-emulation')
       await protocol('Emulation.setFocusEmulationEnabled', { enabled: false })
       result.afterFocusEmulationDisabled = await state()

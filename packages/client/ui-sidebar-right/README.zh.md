@@ -117,7 +117,9 @@ Tab 域按（Session，Tab id）保留品牌化 occurrence id、导航、中止�
 
 内部、响应取消的首次正文需求可以通过同一棵树初始化一个精确、已提交的 occurrence。独立请求分别计数；取消或 occurrence 退休会移除各自需求及两个 abort 监听。框架注入的 observable 驱动 Dockkit 的 `mountRequested`，不改变选中、可见性、焦点、布局或 host 祖先。初始化后，`keepMounted` 正文在请求结束后自行保活；其他类型恢复按可见性挂载。Sidebar 始终将 occurrence 作为 Dockkit 的 `bodyKey`，因此同批关闭再撤销即使复用了 tab id，也不能继承旧正文的访问状态或需求。撤回和重入的 Store 提交会取代旧协调，阻止它继续发布或 pin 过期 occurrence。
 
-标签页所有者通过 effect 注册 `registerCloseHandler(kind, handler)`。handler 在允许显式关闭或替换前同步保存后台清理任务。资源所有者跟踪完成和重试，侧栏不等待清理。handler 抛错时保留标签页。折叠、展示方式改变和插件卸载不调用关闭 handler；tab abort signal 标识 occurrence 卸载，不代表显式关闭。
+原始根可以通过作用域内的 `sidebarRightBodyPreparation` receiver 注册私有 `prepareBody(sessionId, kind, signal, beforePublishTarget)` 端口。它持有真正的 Session 子树，等待精确的就绪与 Store 接管，并且仅在插入 action 返回后捕获新建且已提交的 occurrence。原子安装且不持久化的正文阻断先于所有插入观察者；reservation 完成先于需求发布和阻断移除。已有选中与展示状态保持不变；空 pane 必须将首个 tab 标为 active，但 reservation 前仍不能构造正文。返回的 `{ binding, occurrence, signal, assertCurrent, release }` 既不代表原生就绪，也不授予任务权限。取消会同步移除私有记录、等待与需求；`release()` 还会等待精确的新 occurrence 清理，并保留失败。仅撤回需求不会卸载已初始化的正文。可选 receiver 的卸载会撤销自己的准备操作，但不禁用手动 Sidebar 使用。根卸载在 effect 清理开始前撤销这些操作，并保留 Tab 域与 Session view，直到它们的原生清理结束。
+
+标签页所有者通过 effect 注册 `registerCloseHandler(kind, handler)`。handler 可以同步清理并返回 `void`，也可以返回确认实际清理完成的 promise。关闭、替换和私有释放会先撤销精确 occurrence，再共享同一个待完成清理；移除记录前重新检查最终身份。handler 抛错或拒绝时保留记录并报告失败；原生清理重试仍由资源所有者负责。折叠和展示变化不调用关闭 handler。插件卸载会中止普通 occurrence，而尚未结束的私有准备操作会等待其已注册清理。
 
 关闭与刷新命令解析聚焦 pane 和 tab occurrence。页面通过 `tab.actions.bindCommands()` 绑定刷新操作，并在卸载时释放；已结束的 occurrence 不能重新获得能力。刷新不会重载应用。通过快捷键打开页面、展开侧栏或执行分栏操作后，焦点在 DOM 提交后移至选中的停靠或浮动分栏，包括显示已有单例页面和替换引导页。展开侧栏时聚焦活动停靠分栏；收起时保留浮动分栏内的焦点。分栏获得焦点时保留现有文本选区。聚焦的页面输入框或 iframe 被替换时，仅在没有其他元素持有焦点的情况下将焦点交还其可见分栏；外部指针操作或显式失焦会取消此次恢复。关闭会再次检查捕获的身份并执行资源清理。通过快捷键或原生菜单关闭后，焦点移至同一 Session 中仍可见的分栏，让连续关闭继续作用于右栏。过期目标和清理失败均不会回退为关窗。模态限制遵循[快捷键服务](../shortcuts/README.zh.md)。关闭命令优先请求前台弹窗的关闭操作；弹窗拒绝关闭、菜单或未注册的对话框都会阻止关闭后方侧栏或窗口。通过快捷键或原生菜单关闭唯一的停靠引导页时，收起右栏并保留引导页。Desktop 仅在没有弹窗且焦点没有所属的右栏页面时通过快捷键服务请求关闭窗口；Web 保留浏览器窗口。
 
@@ -158,7 +160,7 @@ root 作用域的 `sidebar.right.tab.guide.actions` list 有注册项时，引�
 - **没有会话就没有停靠面。** 状态按会话 id 键控，因此 hero 画面右侧什么都不显示。
 - **硬编码的层叠。** 内容树使用固定层叠层；浮窗在该层内重排，不会把整层抬到菜单之上。
 - **保活 Session 的删除。** 仅从目录消失不会使保活 View 退休；释放由 tab 生命周期、独立需求和插件卸载负责。
-- **后台任务打开。** 内部渲染需求与私有的实际 Store 接管等待，仍不提供公开任务入口、提供方／原生 guest 就绪屏障或浏览器自动化权限。
+- **Desktop 组合独立负责。** 私有的原始根准备不提供公开任务入口、提供方／原生 guest 就绪屏障或浏览器自动化权限。Desktop 负责 reservation、原生 guest 捕获、实际销毁确认和任务组合；可选 receiver 仅提供 Sidebar 部分。
 - **未暴露撤销。** 记录的序列只能通过 `@internal` 服务方法步进；产品控件是有意缺席的。
 - **标题在打开时固定。** 类型的 `title(address)` 被捕获进记录；会变的标题只来自可选的标题席位。
 - **没有内容导航栈。** 后退回放的是布局操作；编辑器式的「已访问内容」前进/后退尚未构建。

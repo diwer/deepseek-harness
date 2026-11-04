@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { Context } from '@deepseek-ai/cordis'
-import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { Agent, AgentActivity } from '@deepseek-ai/dsh-agent'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { describe, expect, it, onTestFinished, vi } from 'vitest'
 import {
@@ -14,6 +14,13 @@ type Resource = { readonly storage: Map<string, string> }
 function fixture(ports: Partial<Omit<BrowserTaskScopePorts<Resource>, 'agents'>> = {}) {
   const ctx = new Context()
   const live = new Map<SessionId, Agent>()
+  const activities = new WeakMap<Agent, AgentActivity | null>()
+  function beginActivity(owner: Agent) {
+    const abort = new AbortController()
+    const activity = Object.freeze({ signal: abort.signal })
+    setActivity(owner, activity)
+    return { activity, abort }
+  }
   const cleanup: { failure?: unknown } = {}
   const acquire = vi.fn<BrowserTaskScopePorts<Resource>['acquire']>(ports.acquire ?? (async () => ({ storage: new Map() })))
   const release = vi.fn<BrowserTaskScopePorts<Resource>['release']>(ports.release ?? (async () => {}))
@@ -40,10 +47,20 @@ function fixture(ports: Partial<Omit<BrowserTaskScopePorts<Resource>, 'agents'>>
       whenIdle: async () => {}, runMaintenance: task => task(new AbortController().signal),
     }
     live.set(result.id, result)
+    beginActivity(result)
     return result
   }
   function execution(owner: Agent) { return { agent: owner, signal: new AbortController().signal } }
-  return { ctx, live, runEpoch, registry, acquire, release, agent, execution, cleanup }
+  function setActivity(owner: Agent, activity: AgentActivity | null | undefined) {
+    if (activity === undefined) {
+      activities.delete(owner)
+      Reflect.deleteProperty(owner, 'activity')
+    } else {
+      activities.set(owner, activity)
+      Object.defineProperty(owner, 'activity', { configurable: true, enumerable: true, get: () => activities.get(owner) ?? null })
+    }
+  }
+  return { ctx, live, runEpoch, registry, acquire, release, agent, execution, cleanup, beginActivity, setActivity }
 }
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
@@ -434,6 +451,144 @@ describe('browser task scope revocation and drains', () => {
     blocked.resolve(undefined)
     expect(await outcome).toMatchObject({ errors: [first, second] })
     expect(f.release).toHaveBeenCalledTimes(2)
+  })
+
+  it('rejects unsupported, absent and already-draining activities before acquiring resources', () => {
+    const f = fixture()
+    const owner = f.agent()
+    for (const absent of [undefined, null]) {
+      f.setActivity(owner, absent)
+      expect(() => f.registry.admit(f.execution(owner))).toThrow(expect.objectContaining({ code: 'ACTIVITY_REQUIRED' }))
+    }
+    const activity = f.beginActivity(owner)
+    activity.abort.abort()
+    expect(() => f.registry.admit(f.execution(owner))).toThrow(expect.objectContaining({ code: 'ACTIVITY_RETIRED' }))
+    expect(f.acquire).not.toHaveBeenCalled()
+  })
+
+  it('closes zero-task admission before callbacks while allowing a later activity of the same Agent', async () => {
+    const f = fixture()
+    const owner = f.agent()
+    const first = f.beginActivity(owner)
+    const retired = f.registry.revokeActivityAndDrain(owner, first.activity)
+    expect(f.registry.revokeActivityAndDrain(owner, first.activity)).toBe(retired)
+    expect(() => f.registry.admit(f.execution(owner))).toThrow(expect.objectContaining({ code: 'ACTIVITY_RETIRED' }))
+    await retired
+    f.beginActivity(owner)
+    const cap = await f.registry.admit(f.execution(owner))
+    expect(f.registry.metadata(cap).sessionId).toBe(owner.id)
+  })
+
+  it('joins activity operations before release and admits fresh scopes after successful drainage', async () => {
+    const f = fixture()
+    const owner = f.agent()
+    const first = f.beginActivity(owner)
+    const cap = await f.registry.admit(f.execution(owner))
+    const metadata = f.registry.metadata(cap)
+    const entered = Promise.withResolvers<AbortSignal>()
+    const blocked = Promise.withResolvers<undefined>()
+    const operation = f.registry.withScope(cap, async (_resource, _scope, signal) => {
+      entered.resolve(signal)
+      await blocked.promise
+    }).catch((error: unknown) => error)
+    const signal = await entered.promise
+    first.abort.abort()
+    expect(signal.aborted).toBe(true)
+    expect(() => f.registry.admit(f.execution(owner))).toThrow(expect.objectContaining({ code: 'ACTIVITY_RETIRED' }))
+    const retired = f.registry.revokeActivityAndDrain(owner, first.activity)
+    expect(f.release).not.toHaveBeenCalled()
+    blocked.resolve(undefined)
+    expect(await operation).toMatchObject({ code: 'ACTIVITY_RETIRED' })
+    await retired
+    expect(f.release).toHaveBeenCalledOnce()
+    f.beginActivity(owner)
+    const next = await f.registry.admit(f.execution(owner))
+    expect(f.registry.metadata(next).agentEpoch).toBe(metadata.agentEpoch)
+    expect(f.registry.metadata(next).taskEpoch).not.toBe(metadata.taskEpoch)
+    expect(() => f.registry.metadata(cap)).toThrow(expect.objectContaining({ code: 'ACTIVITY_RETIRED' }))
+  })
+
+  it('reclaims a late acquisition and awaits native release before an activity drain settles', async () => {
+    const acquired = Promise.withResolvers<Resource>()
+    const releasing = Promise.withResolvers<undefined>()
+    const released = Promise.withResolvers<undefined>()
+    const f = fixture({ acquire: () => acquired.promise, release: async () => { releasing.resolve(undefined); await released.promise } })
+    const owner = f.agent()
+    const first = f.beginActivity(owner)
+    const admitted = f.registry.admit(f.execution(owner)).catch((error: unknown) => error)
+    first.abort.abort()
+    let finished = false
+    const retired = f.registry.revokeActivityAndDrain(owner, first.activity)
+    void retired.then(() => { finished = true })
+    acquired.resolve({ storage: new Map() })
+    await releasing.promise
+    expect(finished).toBe(false)
+    expect(f.release).toHaveBeenCalledOnce()
+    released.resolve(undefined)
+    expect(await admitted).toMatchObject({ code: 'ACTIVITY_RETIRED' })
+    await retired
+    expect(finished).toBe(true)
+  })
+
+  it('reserves the activity drain before abort reentry and revokes all its tasks first', async () => {
+    const f = fixture()
+    const owner = f.agent()
+    const first = f.beginActivity(owner)
+    const a = await f.registry.admit(f.execution(owner))
+    const b = await f.registry.admit(f.execution(owner))
+    let reentered: Promise<void> | undefined
+    await f.registry.withScope(a, async (_resource, _scope, signal) => {
+      signal.addEventListener('abort', () => {
+        reentered = f.registry.revokeActivityAndDrain(owner, first.activity)
+        expect(() => f.registry.metadata(b)).toThrow(expect.objectContaining({ code: 'ACTIVITY_RETIRED' }))
+        expect(() => f.registry.admit(f.execution(owner))).toThrow(expect.objectContaining({ code: 'ACTIVITY_RETIRED' }))
+      }, { once: true })
+    })
+    const retired = f.registry.revokeActivityAndDrain(owner, first.activity)
+    expect(reentered).toBe(retired)
+    await retired
+    expect(f.release).toHaveBeenCalledTimes(2)
+  })
+
+  it('retains cleanup failures that settled before the activity listener joins', async () => {
+    const failure = new Error('native activity retirement failed')
+    const f = fixture({ release: async () => { throw failure } })
+    f.cleanup.failure = failure
+    const owner = f.agent()
+    const first = f.beginActivity(owner)
+    const cap = await f.registry.admit(f.execution(owner))
+    first.abort.abort()
+    await expect(f.registry.revokeAndDrain(cap)).rejects.toBe(failure)
+    const retired = f.registry.revokeActivityAndDrain(owner, first.activity)
+    await expect(retired).rejects.toBe(failure)
+    expect(f.registry.revokeActivityAndDrain(owner, first.activity)).toBe(retired)
+    expect(f.release).toHaveBeenCalledOnce()
+  })
+
+  it('does not let a foreign or reconstructed activity poison the real activity owner', async () => {
+    const f = fixture()
+    const owner = f.agent('first-session')
+    const foreign = f.agent('other-session')
+    const first = f.beginActivity(owner)
+    const cap = await f.registry.admit(f.execution(owner))
+    expect(() => f.registry.revokeActivityAndDrain(foreign, first.activity)).toThrow(expect.objectContaining({ code: 'INVALID_SCOPE' }))
+    expect(() => f.registry.revokeActivityAndDrain(owner, { signal: first.activity.signal })).toThrow(expect.objectContaining({ code: 'INVALID_SCOPE' }))
+    expect(f.registry.metadata(cap).sessionId).toBe(owner.id)
+    expect(f.release).not.toHaveBeenCalled()
+    await f.registry.revokeActivityAndDrain(owner, first.activity)
+  })
+
+  it('drains only the captured activity and rejects a stale scope after identity turnover', async () => {
+    const f = fixture()
+    const owner = f.agent()
+    const first = f.beginActivity(owner)
+    const old = await f.registry.admit(f.execution(owner))
+    f.beginActivity(owner)
+    const current = await f.registry.admit(f.execution(owner))
+    expect(() => f.registry.metadata(old)).toThrow(expect.objectContaining({ code: 'ACTIVITY_RETIRED' }))
+    await f.registry.revokeActivityAndDrain(owner, first.activity)
+    expect(f.release).toHaveBeenCalledOnce()
+    expect(f.registry.metadata(current).sessionId).toBe(owner.id)
   })
 
   it('lets a contributing Cordis effect own awaitable provider teardown', async () => {

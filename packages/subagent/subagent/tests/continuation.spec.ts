@@ -3237,7 +3237,7 @@ describe('continuable settlement delivery', () => {
     )
   })
 
-  it('delivers the captured answer when local handle cleanup fails', async () => {
+  it('delivers captured output but rejects the local receipt when handle cleanup fails', async () => {
     const { ctx, parent } = await setup([textResponse('the answer'), textResponse('parent ack')])
     const started = await ctx.subagents.startActivation({ ...startSpec(parent), delivery: 'parent' })
     const activation = await vi.waitFor(() => {
@@ -3257,7 +3257,7 @@ describe('continuable settlement delivery', () => {
     expect(settlementNotices(parent)[0]!.text).toBe(
       `Background subagent ${started.childId} finished and will do no further work unless you send it more.\nIts closing message:\nthe answer`,
     )
-    await expect(started.result).resolves.toMatchObject({ stopReason: 'completed' })
+    await expect(started.result).rejects.toThrow('scope unwind failed')
     await expect(started.dispose()).rejects.toThrow('scope unwind failed')
   })
 

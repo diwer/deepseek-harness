@@ -618,7 +618,11 @@ describe('page close and refresh', () => {
     const off = h.controller.registerCloseHandler('terminal', () => { throw new Error('cleanup failed') })
     releases.push(off)
     const context = { target: h.tabElement(tab), region: 'page' as const, modal: null }
+    const target = h.controller.focusedTarget(context.target)!
     expect(() =>{  registry.invoke('page.close' as ShortcutCommandId, context) }).toThrow('cleanup failed')
+    expect(target.occurrence?.signal.aborted).toBe(true)
+    expect(h.controller.isTargetCurrent(target)).toBe(false)
+    expect(h.controller.canCloseTarget(target)).toBe(true)
     expect(h.layout().tabs[tab]).toBeDefined()
     expect(closeWindow).not.toHaveBeenCalled()
     off()

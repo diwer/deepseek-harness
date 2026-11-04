@@ -28,6 +28,20 @@ const emitted = ts.transpileModule(source, { compilerOptions: {
 } }).outputText
 const withoutMap = text => text.replace(/^\/\/# sourceMappingURL=.*$/mu, '').trim()
 assert.ok(withoutMap(artifact) === withoutMap(emitted), 'the existing production guest artifact must match current source; rebuild it before qualification')
+const productionInputArtifacts = []
+for (const name of ['keyboard', 'keybindings', 'ipc']) {
+  const sourcePath = fileURLToPath(new URL(`../src/${name}.ts`, import.meta.url))
+  const artifactPath = fileURLToPath(new URL(`../lib/types/${name}.js`, import.meta.url))
+  const source = await readFile(sourcePath, 'utf8')
+  const artifact = await readFile(artifactPath, 'utf8')
+  const emitted = ts.transpileModule(source, { compilerOptions: {
+    target: ts.ScriptTarget.ES2024, module: ts.ModuleKind.ESNext, rewriteRelativeImportExtensions: true,
+  } }).outputText
+  assert.equal(withoutMap(artifact), withoutMap(emitted), `existing ${name}.js is stale; stop qualification without rebuilding or syncing`)
+  productionInputArtifacts.push({ name, sourcePath, artifactPath, matchesCurrentSource: true,
+    sourceSha256: createHash('sha256').update(source).digest('hex'),
+    artifactSha256: createHash('sha256').update(artifact).digest('hex') })
+}
 const directory = fileURLToPath(new URL('../.desktop-build/qualification/', import.meta.url))
 await mkdir(directory, { recursive: true })
 const root = await mkdtemp(join(directory, 'browser-protocol-'))
@@ -131,6 +145,81 @@ try {
     assert.deepEqual(inserted.native, [])
     assert.ok(baseline.captures.filter(capture => capture.method.startsWith('Page.')).every(capture => capture.ok && capture.freshMarker))
     assert.equal(baseline.captures.find(capture => capture.method === 'capturePage-after-cdp-frame').freshMarker, true)
+    const ignoredInput = baseline.ignoreInputEvents
+    assert.equal(ignoredInput.artificialGateOpen, true)
+    assert.deepEqual(ignoredInput.steps.map(step => step.ignore), [false, true, false])
+    assert.equal(ignoredInput.restored.ignore, false)
+    assert.equal(ignoredInput.restored.prevent, true)
+    const fullKeyDelivered = key => key.fullKeyEventCounts.keydown === 1 && key.fullKeyEventCounts.keyup === 1
+      && key.dom.events.every(event => event.trusted)
+    const mouseDelivered = mouse => mouse.dom.clicks === 1
+      && JSON.stringify(mouse.dom.events.map(event => event.type)) === JSON.stringify(['mousedown', 'mouseup', 'click'])
+      && mouse.dom.events.every(event => event.trusted)
+    for (const step of ignoredInput.steps) {
+      const states = [step.before]
+      for (const route of ['cdp', 'sendInputEvent']) {
+        const sample = step[route]
+        states.push(sample.mouse.state, ...sample.keys.map(key => key.state))
+        assert.ok([...sample.mouse.native, ...sample.keys.flatMap(key => key.native)].every(event => !event.prevented), 'the artificial input gate must remain open')
+        if (!step.ignore) {
+          assert.equal(mouseDelivered(sample.mouse), true, `${step.phase}:${route}: mouse control must deliver a trusted click`)
+          assert.ok(sample.keys.every(fullKeyDelivered), `${step.phase}:${route}: controls must deliver trusted keydown and keyup`)
+          for (const key of sample.keys) assert.equal(key.dom.value, key.variant === 'keyDown-without-text' ? '' : route === 'cdp' ? 'i' : 'x')
+        }
+      }
+      for (const state of states) {
+        assert.deepEqual([state.windowVisible, state.windowFocused, state.ownerFocused, state.guestFocused], [false, false, false, false])
+      }
+    }
+    assert.deepEqual([ignoredInput.restored.state.windowVisible, ignoredInput.restored.state.windowFocused,
+      ignoredInput.restored.state.ownerFocused, ignoredInput.restored.state.guestFocused], [false, false, false, false])
+    const ignored = ignoredInput.steps.find(step => step.ignore)
+    ignoredInput.cdpMouseSupported = mouseDelivered(ignored.cdp.mouse)
+    ignoredInput.cdpFullKeySupported = ignored.cdp.keys.every(fullKeyDelivered)
+      && ignored.cdp.keys.every(key => key.dom.value === (key.variant === 'keyDown-without-text' ? '' : 'i'))
+    ignoredInput.ordinaryInputBlocked = ignored.sendInputEvent.mouse.dom.clicks === 0 && ignored.sendInputEvent.mouse.dom.events.length === 0
+      && ignored.sendInputEvent.keys.every(key => key.dom.value === '' && key.dom.events.length === 0)
+    ignoredInput.selectiveInputSupported = ignoredInput.cdpMouseSupported && ignoredInput.cdpFullKeySupported && ignoredInput.ordinaryInputBlocked
+    console.log(`Native browser ignore-input qualification ${ignoredInput.selectiveInputSupported ? 'selective candidate observed; authority/drain unqualified' : 'unsupported'}: ${JSON.stringify(ignoredInput)}`)
+    const productionShortcuts = baseline.productionShortcuts
+    assert.equal(productionShortcuts.artificialGateOpen, true)
+    assert.equal(productionShortcuts.ignoreInputEvents, false)
+    assert.equal(productionShortcuts.privateUserData, join(root, 'profile'))
+    assert.equal(productionShortcuts.configurationIPCInvoked, false)
+    assert.equal(productionShortcuts.taskAuthorityQualified, false)
+    assert.equal(productionShortcuts.cleanup, true)
+    assert.deepEqual(productionShortcuts.steps.map(step => step.blocked), [false, true, false])
+    assert.deepEqual(productionShortcuts.steps.map(step => step.overlayRevision), [1, 2, 3])
+    const productionStates = [productionShortcuts.restored.state]
+    for (const step of productionShortcuts.steps) {
+      assert.equal(step.syntheticPrevent, false)
+      assert.equal(mouseDelivered(step.mouse), true, `${step.phase}: the production keyboard handler must leave the control mouse path unchanged`)
+      assert.ok(step.mouse.native.length > 0 && step.mouse.native.every(event => !event.prevented && !event.syntheticPrevent))
+      assert.deepEqual(step.keys.map(key => key.variant), ['keyDown-with-text', 'rawKeyDown-plus-char', 'keyDown-without-text'])
+      for (const key of step.keys) {
+        assert.ok(key.native.length > 0, `${step.phase}:${key.variant}: observe the actual production before-input listener`)
+        assert.ok(key.native.every(event => event.source === 'before-input-event' && event.prevented === step.blocked
+          && event.overlayBlocked === step.blocked && !event.syntheticPrevent), `${step.phase}:${key.variant}: production overlay prevention must match the supplied state`)
+        assert.ok(key.dom.events.every(event => event.trusted))
+        if (!step.blocked) {
+          assert.equal(fullKeyDelivered(key), true, `${step.phase}:${key.variant}: actual production handler must pass the full trusted key path`)
+          assert.equal(key.dom.value, key.variant === 'keyDown-without-text' ? '' : 'i')
+        }
+      }
+      productionStates.push(step.before, step.mouse.state, ...step.keys.map(key => key.state))
+      step.cdpFullKeyPathDelivered = step.keys.every(fullKeyDelivered)
+      step.keyResults = step.keys.map(key => ({ variant: key.variant, fullKeyPathDelivered: fullKeyDelivered(key),
+        fullKeyEventCounts: key.fullKeyEventCounts, value: key.dom.value, domEvents: key.dom.events.map(event => event.type) }))
+    }
+    for (const state of productionStates) {
+      assert.deepEqual([state.windowVisible, state.windowFocused, state.ownerFocused, state.guestFocused], [false, false, false, false])
+    }
+    assert.equal(productionShortcuts.restored.overlayBlocked, false)
+    assert.equal(productionShortcuts.restored.prevent, true)
+    assert.deepEqual(productionShortcuts.restored.listenersAfter, productionShortcuts.restored.listenersBefore)
+    productionShortcuts.openAndRestoredFullKeySupported = productionShortcuts.steps.filter(step => !step.blocked).every(step => step.cdpFullKeyPathDelivered)
+    productionShortcuts.blockedFullKeySupported = productionShortcuts.steps.find(step => step.blocked).cdpFullKeyPathDelivered
+    console.log(`Native browser production shortcuts qualification: ${JSON.stringify(productionShortcuts)}`)
   }
   assert.equal(observation.concurrentAttachmentIdentity.samePartition, true)
   assert.equal(observation.concurrentAttachmentIdentity.attachments.length, 2)
@@ -146,7 +235,7 @@ try {
   assert.equal(httpUserAgentRestorationSupported, true)
   result = { ...observation, requestObservations, httpUserAgentRestorationSupported,
     sourceSha256: createHash('sha256').update(source).digest('hex'),
-    productionArtifactMatchesCurrentSource: true, childOutcome: outcome, timedOut, childrenExited: true,
+    productionArtifactMatchesCurrentSource: true, productionInputArtifacts, childOutcome: outcome, timedOut, childrenExited: true,
   }
 } finally {
   clearTimeout(deadline)

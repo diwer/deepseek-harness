@@ -62,6 +62,14 @@ export interface AgentEventDispatch {
    */
   emit<K extends AgentSubjectEvent>(name: K, payload: PayloadRest<K>): void
   /**
+   * Dispatch concurrently in the agent's scope and join every listener, including
+   * after synchronous throws. Rejects with Cordis' aggregate of listener failures.
+   * @param name - the agent-subject event to dispatch.
+   * @param payload - the event's payload fields; `agent` is injected.
+   * @returns fulfillment after every listener settles.
+   */
+  parallel<K extends AgentSubjectEvent>(name: K, payload: PayloadRest<K>): Promise<void>
+  /**
    * Awaited in-order dispatch (Cordis `serial`) in the agent's scope.
    * @param name - the agent-subject event to dispatch.
    * @param payload - the event's payload fields; `agent` is injected.
@@ -134,6 +142,11 @@ export function agentEvents(ctx: Context, agent: Agent, carrier: Scoped<Agent> =
           ctx.logger.warn(`agent event "${name}" listener threw: ${String(error)}`)
         }
       }
+    },
+    async parallel(name, payload) {
+      // oxlint-disable-next-line typescript/unbound-method -- the events mixin accessor returns a pre-bound function
+      const parallel = ctx.parallel as (thisArg: Scoped<Agent>, name: string, ...args: unknown[]) => Promise<void>
+      await parallel(carrier, name, fused(payload))
     },
     async serial(name, payload) {
       // oxlint-disable-next-line typescript/unbound-method -- the events mixin accessor returns a pre-bound function

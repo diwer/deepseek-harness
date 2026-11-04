@@ -220,6 +220,7 @@ export const SERVICE_WALK_EXEMPTIONS: Record<string, string> = {
   resources: 'client-side resource model (protocol providers, pins, live sources) — packages/client/resources/README.md owns the API',
   sidebarRight: 'client-side right-Sidebar navigation face — packages/client/ui-sidebar-right/README.md owns the API',
   sidebarRightTabs: 'client-side right-Sidebar tab-type registry — packages/client/ui-sidebar-right/README.md owns the API',
+  sidebarRightBodyPreparation: 'client-side Desktop-private optional original-root preparation receiver, not a public navigation or model Service — packages/client/ui-sidebar-right/README.md owns the effect/cleanup contract',
   documentPreviews: 'client-side document renderer registry — docs/subsystems/sidebar-right.md owns the API',
 }
 
@@ -378,6 +379,8 @@ export const LINK_MAP: Readonly<Record<string, string>> = {
   TestPublishRequest: 'liveshare.md',
   UpdateSharePermissionsRequest: 'liveshare.md',
   Agent: 'core.md',
+  AgentActivity: 'core.md',
+  AgentActivityBusyError: 'core.md',
   AgentCancelCause: 'core.md',
   AgentFactory: 'core.md',
   AgentHandle: 'core.md',

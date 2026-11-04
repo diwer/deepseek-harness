@@ -39,8 +39,11 @@
   en: ec2bf804bd1a5439
   zh: 316e767507e859ef
 /deepseek-ai-dsh-agent-loop/understand-the-implementation/creation-and-teardown:
-  en: eaaed8cc22640221
-  zh: 557e2e67888ef7f6
+  en: f37652ea7a74e831
+  zh: a9fd30c2d313093b
+/deepseek-ai-dsh-agent-loop/understand-the-implementation/activity-resource-drainage:
+  en: 50c0fbecd3f66b3a
+  zh: a7e0adc76eafa148
 /deepseek-ai-dsh-agent-loop/understand-the-implementation/persistence-integration:
   en: 3b48a480036bd5df
   zh: 28cea2036b0dccee

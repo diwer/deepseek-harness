@@ -45,6 +45,8 @@ export class BrowserController implements HostObservable<BrowserControllerState>
     this.actions = options.actions
     this.checkpoint = options.initial
     this.page = options.createPage({
+      tabId: options.tabId,
+      signal: options.signal,
       initial: options.initial,
       persist: (state) => {
         if (this.disposed) return

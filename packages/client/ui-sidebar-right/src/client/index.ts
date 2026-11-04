@@ -27,7 +27,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-context-menu/client'
 import type {} from '@deepseek-ai/dsh-client-shortcuts/client'
 import { observeSidebarFocus } from './focus.ts'
 import { registerSidebarShortcuts } from './shortcuts.ts'
-import type { Context as ClientContext } from '@deepseek-ai/cordis'
+import { FiberState, type Context as ClientContext } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-resources/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
@@ -44,6 +44,7 @@ import { closeWithPaneFocus, openWithPaneFocus } from './shell/close-focus.ts'
 import { RightbarRoot, type RightbarRootInjected } from './shell/RightbarRoot.tsx'
 import { SidebarSessionViews } from './session-views.ts'
 import { SidebarStoreAdoptions } from './store-adoptions.ts'
+import { SidebarBodyPreparations } from './body-preparation.ts'
 import { createSidebarRightController, type SidebarRightController } from './service.ts'
 import { SidebarRightTabRegistry } from './tab-registry.ts'
 import { createSidebarRightStore } from './stores.ts'
@@ -54,6 +55,7 @@ import { guideTabInfoFactory, tabInfoFactory } from './tab-info.ts'
 import type { TabId } from '@deepseek-ai/dsh-client-ui-dockkit'
 import { defaultSeed } from './contract/seed.ts'
 
+export type { SidebarRightBodyPreparationPort, SidebarRightBodyPreparationReceiver, SidebarRightPreparedBody, SidebarRightPreparedBodyTarget } from './body-preparation-types.ts'
 export type { SidebarRightTarget } from './focus.ts'
 export type { RightbarSeatProps, SidebarRightInjected, SidebarRightPresentation } from './shell/SidebarRight.tsx'
 export type { GuideBodyProps, GuideInjected } from './tabs/guide/GuideBody.tsx'
@@ -121,13 +123,13 @@ export function apply(ctx: ClientContext): void {
     const sync = (): void => { views.select(current.getSnapshot().key as SessionId | undefined) }
     const unsubscribe = current.subscribe(sync)
     sync()
-    return () => { unsubscribe(); views.dispose() }
+    return unsubscribe
   }, 'ui-sidebar-right: retained Session views')
   const layout: ILayout = ctx.layout
   // The automatic fullscreen rule as the seats last rendered it: the frame
   // hands them its width as owner props, and every seat reports the same rule.
   let autoFullscreen = false
-  const { controller, adopt, forget, show, measure } = createSidebarRightController(
+  const { controller, adopt, forget, show, measure, removePrepared } = createSidebarRightController(
     tabs,
     (address, signal) => { ctx.resources.pin(address, signal) },
     {
@@ -180,17 +182,8 @@ export function apply(ctx: ClientContext): void {
       show(undefined)
     }
   }, 'ui-sidebar-right: on-screen Session')
-  const disposeRegistry = ctx.reflect.provide('sidebarRightTabs', tabs)
-  const disposeService = ctx.reflect.provide('sidebarRight', controller)
-  // Registered first, so it tears down last: the faces outlive every seat and
-  // type that reaches for them. provide()'s disposer settles asynchronously;
-  // teardown is synchronous fire-and-forget, matching ui-layout's root entry.
-  // Unloading aborts every tab occurrence, which releases every pin.
-  ctx.effect(() => () => {
-    controller.tabDomain.dispose()
-    void disposeService()
-    void disposeRegistry()
-  }, 'ui-sidebar-right: service faces')
+  ctx.provide('sidebarRightTabs', tabs)
+  ctx.provide('sidebarRight', controller)
 
   ctx.effect(() => ctx.locale.register(NS, { zh, en, ja, es, fr, de, ru, pt }), 'ui-sidebar-right: dictionaries')
   ctx.effect(() => registerSidebarShortcuts(ctx.shortcuts, controller, t, () => {
@@ -203,6 +196,44 @@ export function apply(ctx: ClientContext): void {
     // Each Session Context generation owns one Store. Background tab actions
     // use the latest adoption for that Session.
     const adoptions = new SidebarStoreAdoptions(adopt)
+    const preparations = new Set<SidebarBodyPreparations>()
+    const revokePreparations = (): void => {
+      for (const owner of preparations) {
+        void owner.dispose().catch((error: unknown) => { console.error('Sidebar body preparation shutdown failed:', error) })
+      }
+    }
+    // Fiber transitions precede its concurrently scheduled effect cleanup.
+    ctx.on('internal/plugin', (fiber) => {
+      if (fiber === ctx.fiber && fiber.uid === null) revokePreparations()
+    })
+    ctx.on('internal/status', (fiber) => {
+      if (fiber === ctx.fiber && fiber.state === FiberState.UNLOADING) revokePreparations()
+    })
+    const preparationRegistration = ctx.inject(['sidebarRightBodyPreparation'], (scope) => {
+      scope.effect(() => {
+        const owner = new SidebarBodyPreparations(views, adoptions, tabs, controller.tabDomain, removePrepared)
+        preparations.add(owner)
+        let unregister: () => void
+        try { unregister = scope.sidebarRightBodyPreparation.register(owner) }
+        catch (error) {
+          return owner.dispose().then(() => {
+            preparations.delete(owner)
+            throw error
+          }, (cleanupError: unknown) => {
+            preparations.delete(owner)
+            throw new AggregateError([error, cleanupError], 'Sidebar preparation registration and cleanup failed')
+          })
+        }
+        return async () => {
+          const cleanup = owner.dispose()
+          preparations.delete(owner)
+          const failures: unknown[] = []
+          try { unregister() } catch (error) { failures.push(error) }
+          try { await cleanup } catch (error) { failures.push(error) }
+          if (failures.length > 0) throw new AggregateError(failures, 'Sidebar preparation registration disposal failed')
+        }
+      }, 'ui-sidebar-right: private body preparation')
+    })
     const store: typeof handle = {
       ...handle,
       create: (scopeKey) => {
@@ -309,13 +340,21 @@ export function apply(ctx: ClientContext): void {
       { name: 'sidebar.right.pane.tab.title', key: GUIDE_ID },
       GuideTitle,
     ))
-    return () => {
-      disposeGuideTitle()
-      disposeGuide()
-      disposeExpand()
-      disposeSeat()
-      for (const dispose of disposeTypes.reverse()) dispose()
-      adoptions.dispose()
+    return async () => {
+      // Revoke every private operation before unregistering or disposing any original-root body.
+      const cleanup = [...preparations].map(owner => owner.dispose())
+      cleanup.push(preparationRegistration.dispose())
+      const results = await Promise.allSettled(cleanup)
+      const failures: unknown[] = []
+      for (const result of results) if (result.status === 'rejected') failures.push(result.reason)
+      const disposers = [
+        disposeGuideTitle, disposeGuide, disposeExpand, disposeSeat, ...disposeTypes.reverse(),
+        () => { adoptions.dispose() }, () => { controller.tabDomain.dispose() }, () => { views.dispose() },
+      ]
+      for (const dispose of disposers) {
+        try { dispose() } catch (error) { failures.push(error) }
+      }
+      if (failures.length > 0) throw new AggregateError(failures, 'Sidebar root cleanup failed')
     }
   }, 'ui-sidebar-right: seats and shipped tab type')
 }

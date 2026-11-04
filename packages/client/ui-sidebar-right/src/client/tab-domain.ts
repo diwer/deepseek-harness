@@ -195,6 +195,25 @@ export class TabDomain {
   }
 
   /**
+   * Check exact identity without extending its lifetime, including while cleanup is pending.
+   * @param occurrence - captured open lifetime.
+   * @returns whether this domain still holds that exact committed occurrence.
+   */
+  isCurrent(occurrence: TabOccurrence): boolean {
+    const held = this.bySession.get(occurrence.sessionId)?.get(occurrence.tabId)
+    return !this.closed && held === occurrence && held.pinned
+  }
+
+  /**
+   * Revoke commands and body demands before native cleanup, without forgetting the drawn record.
+   * @param occurrence - exact committed lifetime being removed.
+   */
+  revoke(occurrence: TabOccurrence): void {
+    const held = this.bySession.get(occurrence.sessionId)?.get(occurrence.tabId)
+    if (held === occurrence) held.controller.abort()
+  }
+
+  /**
    * Record that an `open` settled on a tab.
    *
    * A record the layout has not yet shown the seat gets its occurrence here, so

@@ -66,13 +66,13 @@ Web 记录 toolbar 提交和 typed tab 打开。导航状态机把每个受控 r
 
 ### Controller
 
-每个 tab 的 `BrowserController` 负责地址校验、命令和显式恢复。`BrowserFrame` 提供与载体无关的导航状态；`IframeImpl` 使用 `BrowserNavigation`，`ElectronWebViewImpl` 观察 Chromium history。`BrowserPresentation` 负责 DOM 的物理挂载。Slot injection 提供 `useBrowserState` 和普通 callback，React body 不接收 provider 对象或 observable。
+每个 tab 的 `BrowserController` 负责地址校验、命令和显式恢复。页面工厂接收精确 tab id 与 occurrence signal，仅作关联，不授予权限；物理重新挂载复用原页面。`BrowserFrame` 提供与载体无关的导航状态；`IframeImpl` 使用 `BrowserNavigation`，`ElectronWebViewImpl` 观察 Chromium history。`BrowserPresentation` 负责 DOM 的物理挂载。Slot injection 提供 `useBrowserState` 和普通 callback，React body 不接收 provider 对象或 observable。
 
 Desktop 主进程批准 guest 租约，并执行挂载、导航和权限策略。preload 只暴露限定范围的 Browser 操作。共享声明通过标准 `/types` 出口配合 `import type` 引入；Host 与 Client 使用独立 tsconfig 编译。Desktop Browser tab 声明 `keepMounted`，Sidebar 因而在切 tab、切 Session、收起与浮动期间保留其 DOM。
 
 桥接声明 `nativeAttachment` 版本 1 时，首次导航同时等待 renderer 的 `dom-ready` 和 Main 对精确一次性租约、输入路由安装及无活动内容初始文档的确认。Main 在该文档就绪前绑定物理 guest，因此提前释放也能销毁它。挂载等待由租约持有，30 秒后超时；释放、崩溃或所属窗口退役会拒绝等待。物理移除立即取消 Client 等待；销毁操作等待租约释放完成。迟到答复不能激活替代 guest。旧版手动桥接保留仅等待 renderer 的行为。挂载确认既不授予 Agent 授权，也不转移控制权，详见[原生挂载决策](../../../.agents/notes/implemented/feature/2026-09-20-desktop-browser-webview.zh.md#native-attachment-readiness)。
 
-`/types` 声明也描述私有 Host–Main 任务消息。消息只携带关联元数据，不授予浏览器权限，也不新增 preload 方法、Tool 或 Client 自动化入口。私有任务提供方尚未接入生产链路；没有 Main handler 时，任务准备会失败，不会借用手动租约。详见[任务 IPC 决策](../../../.agents/notes/implemented/feature/2026-09-20-desktop-browser-webview.zh.md#task-ipc-authority)。
+`/types` 声明也描述私有 Host–Main 任务消息。消息只携带关联元数据，不授予浏览器权限，也不新增 preload 方法、Tool 或 Client 自动化入口。Host scope 准入还要求精确 Agent 当前尚未退役的活动。注册表先关闭该活动全部任务的准入，再等待迟到的资源获取和已开始的操作等清理；零任务活动也能退役，而不永久退役 Agent。这些组件尚未连接生产任务提供方或 Core 排空事件；没有 Main handler 时，任务准备会失败，不会借用手动租约。详见[任务 IPC 决策](../../../.agents/notes/implemented/feature/2026-09-20-desktop-browser-webview.zh.md#task-ipc-authority)。
 
 页面刷新快捷键调用工具栏使用的同一重载操作。其 Tooltip 和 ARIA 组合随有效绑定更新。Desktop 通过所属窗口路由已批准 guest 中的有效快捷键；获焦 webview 必须仍持有该 guest 的租约。Web 保留浏览器专用组合。
 
@@ -120,5 +120,7 @@ Desktop 主进程批准 guest 租约，并执行挂载、导航和权限策略�
 <summary>维护者工作上下文——点击展开</summary>
 
 先执行 `pnpm run build:artifacts`，再从仓库根目录执行 `pnpm run test:desktop:browser`，使用当前生产产物验证存储与精确原生挂载。fixture 使用私有 Electron profile 和自有 loopback 页面，不启动已安装应用，也不证明任务授权、完整输入处理或原始树集成。
+
+另行执行 `node apps/desktop/scripts/test-browser-protocol.mjs` 进行协议验证，分别比较人工构造的输入闸门、`Input.setIgnoreInputEvents`，以及配合受控 overlay 回调的当前生产快捷键编译产物。在自有隐藏 guest 中，真实处理器未阻断时，所测三种 CDP 按键变体均产生完整、可信的按下与抬起事件，无需原生窗口或 guest 获焦。overlay 阻断时仍有部分按键和 CDP 鼠标输入通过，因此它不是 Agent 输入权限屏障。ignore-input 同时阻断所测 CDP 与普通注入输入，不能选择性区分两种来源。这些观察都不证明任意按键、IME、物理 OS 输入或人工接管排空已经合格。
 
 </details>
