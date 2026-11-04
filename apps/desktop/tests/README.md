@@ -10,12 +10,28 @@ Installed qualification can opt into `DSH_DESKTOP_UPDATE_JOURNAL_DIR`, an absolu
 
 ## Table of Contents
 
+- [Native browser storage](#verification-browser-storage)
 - [Fault-report verification](#verification-diagnostics)
 - [Update dialog themes](#verification-theme)
 - [Native overlay visibility](#verification-overlay)
 - [Evidence](#verification-evidence)
 - [Manual walkthrough](#verification-interactive)
 - [Open verification](#verification-open)
+
+<a id="verification-browser-storage"></a>
+
+## Native browser storage
+
+With the Desktop dependency's Electron runtime installed and a graphical session available, run from the repository root:
+
+```sh
+pnpm exec tsc -b apps/desktop/tsconfig.host.json packages/client/ui-sidebar-browser/tsconfig.client.json
+pnpm run test:desktop:browser
+```
+
+The runner creates hidden native windows and real webviews with the built production guest owner and client Session-storage resolver. A private `userData` directory and one allocated loopback origin are reused across two sequential Electron processes. Each process checks initially empty cookies and local storage, same-Session sharing, bidirectional cross-Session isolation, foreign-window lease rejection, native isolation settings, tab replacement, storage after the last Session tab closes, and owner-destruction cleanup. A third process deliberately shares storage across Sessions and must fail the actual storage-isolation assertion.
+
+The runner waits for child exit and HTTP-server closure before writing `result.json` under `.desktop-build/qualification/browser-storage-*`. Independent invocations allocate separate directories and ports. No DSH Host, installed application, live profile, global debugging port, or operating-system input is used. These checks do not qualify the assembled native Browser UI, preload IPC authentication, Agent authorization, handoff, or locked-screen operation.
 
 <a id="verification-diagnostics"></a>
 

@@ -10,12 +10,28 @@
 
 ## 目录
 
+- [原生浏览器存储](#verification-browser-storage)
 - [故障报告验证](#verification-diagnostics)
 - [更新弹窗主题](#verification-theme)
 - [原生浮层可见性](#verification-overlay)
 - [验证证据](#verification-evidence)
 - [手动演练](#verification-interactive)
 - [待验证事项](#verification-open)
+
+<a id="verification-browser-storage"></a>
+
+## 原生浏览器存储
+
+安装 Desktop 依赖中的 Electron 运行时，并确保图形会话可用后，在仓库根目录执行：
+
+```sh
+pnpm exec tsc -b apps/desktop/tsconfig.host.json packages/client/ui-sidebar-browser/tsconfig.client.json
+pnpm run test:desktop:browser
+```
+
+运行器使用已编译的生产 guest 所有者与客户端 Session 存储解析器，创建隐藏的原生窗口和真实 webview。两个顺序启动的 Electron 进程复用独立 `userData` 目录及同一个已分配的回环源站。每个进程检查初始 Cookie 与本地存储为空、同 Session 共享、跨 Session 双向隔离、跨窗口租约拒绝、原生隔离设置、标签替换、关闭 Session 最后一个标签后的存储，以及所有者销毁清理。第三个进程故意让不同 Session 共享存储，必须触发真实存储隔离断言失败。
+
+运行器等待子进程退出和 HTTP 服务器关闭后，才在 `.desktop-build/qualification/browser-storage-*` 下写入 `result.json`。独立调用分配各自的目录与端口。不使用 DSH Host、已安装应用、现有 profile、全局调试端口或操作系统输入。这些检查不认证组合后的原生 Browser 界面、预加载 IPC 身份验证、Agent 授权、控制权交接或锁屏运行。
 
 <a id="verification-diagnostics"></a>
 
