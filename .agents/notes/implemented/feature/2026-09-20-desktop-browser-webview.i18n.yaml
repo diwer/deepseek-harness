@@ -20,6 +20,9 @@
 /agent-note-retained-desktop-browser-webviews/decision/native-attachment-readiness:
   en: b14e4780fb37e7bc
   zh: 72742ce87daf7a36
+/agent-note-retained-desktop-browser-webviews/decision/task-ipc-authority:
+  en: 3e3b7d359969d8c2
+  zh: 8c1bd4a784e39d5f
 /agent-note-retained-desktop-browser-webviews/alternatives-considered:
   en: 884daa089df32dcc
   zh: 7e16d740897555c9

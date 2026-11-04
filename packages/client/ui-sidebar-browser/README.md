@@ -72,6 +72,8 @@ Desktop's main process approves guest leases and enforces attachment, navigation
 
 On a bridge advertising `nativeAttachment` version 1, initial navigation waits for both renderer `dom-ready` and Main's confirmation of the exact one-shot lease, installed input routing, and inert bootstrap document. Main binds the physical guest before that document is ready, so early release can destroy it. The attachment wait is lease-owned and expires after 30 seconds; release, crash, or owner retirement rejects it. Physical removal cancels the Client wait immediately; disposal awaits lease release. Late answers cannot activate a replacement guest. Legacy manual bridges retain renderer-only readiness. Attachment confirmation grants neither Agent authorization nor control ownership; see the [native attachment decision](../../../.agents/notes/implemented/feature/2026-09-20-desktop-browser-webview.md#native-attachment-readiness).
 
+The `/types` declarations also describe private Host–Main task messages. They carry correlation metadata, not browser authority, and add no preload method, Tool or Client automation entry. The private task provider is not connected to production; without a Main handler, task preparation fails instead of using a manual lease. See the [task IPC decision](../../../.agents/notes/implemented/feature/2026-09-20-desktop-browser-webview.md#task-ipc-authority).
+
 The page refresh shortcut calls the same reload operation as the toolbar. Its tooltip and ARIA key combination follow the effective binding. Desktop routes accepted shortcuts from an approved guest through its owning window; the focused webview must still carry that guest’s lease. Web leaves browser-reserved combinations unchanged.
 
 </details>

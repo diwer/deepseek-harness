@@ -5,7 +5,10 @@ import { join } from 'node:path'
 import { z } from 'zod'
 import type { PlatformSession } from '@deepseek-ai/dsh-deepseek-account'
 import { desktopNodeEnvironment } from './node-environment.ts'
+import { DesktopBrowserTaskServer, type DesktopBrowserTaskHandler } from './browser-task-server.ts'
 import { parsePluginOperationRecord, type PluginOperationRecord, type PluginOperationRunId } from '@deepseek-ai/dsh-plugin-manager/diagnostic'
+
+const IPC_DISCONNECT_EXIT_DEADLINE_MS = 250
 
 interface ReadyEvent {
   readonly type: 'ready'
@@ -157,6 +160,7 @@ export class DesktopHostFatalError extends Error {
 /** One Web backend running under the Electron executable in Node mode. */
 export class DesktopHostProcess {
   private runId: PluginOperationRunId | undefined
+  private browserTasks: DesktopBrowserTaskServer | undefined
   private child: ChildProcess | undefined
   private readyResolve!: (ready: DesktopHostReady) => void
   private readyReject!: (error: Error) => void
@@ -187,6 +191,7 @@ export class DesktopHostProcess {
    * @param packageManager - Bundled pnpm entry and Node launcher directory, scoped to package operations.
    * @param onPlatformSession - Private credential updates for embedded Platform views.
    * @param onPluginOperation - Optional diagnostic sink; malformed records are ignored without failing the Host.
+   * @param browserTaskHandler - Main-owned task executor; omission rejects task requests without creating manual guests.
    */
   constructor(
     private readonly node: string,
@@ -200,6 +205,7 @@ export class DesktopHostProcess {
 
     private readonly onPlatformSession?: (session: PlatformSession | null) => void,
     private readonly onPluginOperation?: (record: PluginOperationRecord) => void,
+    private readonly browserTaskHandler?: DesktopBrowserTaskHandler,
   ) {}
 
   /**
@@ -227,6 +233,17 @@ export class DesktopHostProcess {
     child.stderr?.on('data', (chunk: string) => { this.stderr = (this.stderr + chunk).slice(-MAX_HOST_DIAGNOSTIC_CHARS) })
     child.stdout?.pipe(process.stdout)
     child.on('message', (message: unknown) => {
+      if (typeof message === 'object' && message !== null && 'type' in message
+        && typeof message.type === 'string' && message.type.startsWith('browser-task/')) {
+        try {
+          if (this.browserTasks === undefined) throw new Error('desktop browser: Host has not announced its run')
+          this.browserTasks.receive(message)
+        } catch (error: unknown) {
+          this.fail(error instanceof Error ? error : new Error(String(error)))
+          child.kill('SIGTERM')
+        }
+        return
+      }
       if (typeof message === 'object' && message !== null && 'type' in message && message.type === 'plugin-operation') {
         const record = 'record' in message ? parsePluginOperationRecord(message.record) : undefined
         if (record !== undefined && record.runId === this.runId) {
@@ -243,7 +260,25 @@ export class DesktopHostProcess {
         child.kill('SIGTERM')
         return
       }
-      if (message.type === 'starting') this.runId = message.runId
+      if (message.type === 'starting') {
+        if (this.runId !== undefined) {
+          this.fail(new Error('desktop browser: Host run was announced twice'))
+          child.kill('SIGTERM')
+          return
+        }
+        this.runId = message.runId
+        this.browserTasks = new DesktopBrowserTaskServer(message.runId, reply => new Promise<void>((resolve, reject) => {
+          if (!child.connected) { reject(new Error('desktop browser: Host process disconnected')); return }
+          child.send(reply, (error) => { if (error === null) resolve(); else reject(error) })
+        }), this.browserTaskHandler, (error) => {
+          try { this.fail(error) }
+          finally {
+            // A closed server cannot send a drained ACK. End the actual transport so Host waiters fail too.
+            if (child.connected) child.disconnect()
+            child.kill('SIGTERM')
+          }
+        })
+      }
       else if (message.type === 'ready') this.readyResolve({ url: message.url, injections: message.injections })
       else if (message.type === 'platform-session') this.onPlatformSession?.(message.session)
       else if (message.type === 'shutdown-complete') {
@@ -258,12 +293,44 @@ export class DesktopHostProcess {
       }
     })
     child.once('error', (error) => { this.fail(error) })
-    this.exitPromise = new Promise<void>((resolve) => {
-      child.once('close', (code) => {
-        const suffix = this.stderr.trim() === '' ? '' : `: ${this.stderr.trim()}`
-        if (code !== 0 && code !== null) this.fail(new Error(`dsh desktop host exited with ${String(code)}${suffix}`))
-        else this.fail(new Error(`dsh desktop host stopped${suffix}`))
+    // Parent-initiated IPC disconnect can suppress ChildProcess close; join exit, IPC and diagnostic closure explicitly.
+    const terminated = new Promise<void>((resolve) => {
+      const finish = (): void => {
+        child.removeListener('exit', finish)
+        child.removeListener('close', finish)
         resolve()
+      }
+      child.once('exit', finish)
+      // A spawn failure emits close without exit.
+      child.once('close', finish)
+    })
+    const diagnosticDrain = [child.stdout, child.stderr].map(stream => new Promise<void>((resolve) => {
+      if (stream === null || stream.closed) resolve()
+      else stream.once('close', () => { resolve() })
+    }))
+    const transportDrain = new Promise<void>((resolve) => {
+      if (!child.connected) resolve()
+      else child.once('disconnect', () => { resolve() })
+    })
+    const exited = Promise.all([terminated, transportDrain, ...diagnosticDrain]).then(() => {
+      const suffix = this.stderr.trim() === '' ? '' : `: ${this.stderr.trim()}`
+      const code = child.exitCode
+      if (code !== 0 && code !== null) this.fail(new Error(`dsh desktop host exited with ${String(code)}${suffix}`))
+      else this.fail(new Error(`dsh desktop host stopped${suffix}`))
+    })
+    this.exitPromise = exited
+    child.once('disconnect', () => {
+      // Native admission and platform credentials close immediately, independently of physical process exit.
+      void this.browserTasks?.close().catch((failure: unknown) => {
+        console.error('desktop browser task cleanup failed', failure)
+      })
+      this.onPlatformSession?.(null)
+      // A normal exit retains its drained stderr diagnostic; an IPC-orphaned child has a bounded failure deadline.
+      void exitsWithin(exited, IPC_DISCONNECT_EXIT_DEADLINE_MS).then((closed) => {
+        if (closed || this.stopping || this.child !== child) return
+        const suffix = this.stderr.trim() === '' ? '' : `: ${this.stderr.trim()}`
+        this.fail(new Error(`dsh desktop host disconnected without exiting${suffix}`))
+        child.kill('SIGTERM')
       })
     })
     return this.readyPromise
@@ -346,8 +413,10 @@ export class DesktopHostProcess {
    */
   async stop(requireGraceful = false): Promise<void> {
     const child = this.child
-    if (child === undefined) return
+    if (child === undefined) { await this.browserTasks?.close(); return }
     this.stopping = true
+    // Native cancellation starts before asking the Host to unwind. Keep rejection observed until joined below.
+    const taskDrain = this.browserTasks?.drain().then(() => undefined, (error: unknown) => ({ error }))
     this.onPlatformSession?.(null)
     if (child.connected) child.send({ type: 'shutdown' }, (error) => { if (error !== null) this.fail(error) })
     const exited = this.exitPromise ?? Promise.resolve()
@@ -360,6 +429,9 @@ export class DesktopHostProcess {
       }
     }
     this.child = undefined
+    const taskFailure = await taskDrain
+    await this.browserTasks?.close()
+    if (taskFailure !== undefined) throw taskFailure.error
     if (requireGraceful && (!graceful || child.exitCode !== 0 || !this.shutdownCompleted)) {
       // This diagnostic reaches expandable UI; arbitrary plugin stderr can contain credentials.
       throw new DesktopHostUncleanExitError(`desktop update: Host did not complete graceful task teardown (exit ${String(child.exitCode)}, signal ${String(child.signalCode)}, shutdown acknowledged ${String(this.shutdownCompleted)}, graceful deadline exceeded ${String(!graceful)})`)
@@ -367,6 +439,9 @@ export class DesktopHostProcess {
   }
 
   private fail(error: Error): void {
+    void this.browserTasks?.close().catch((failure: unknown) => {
+      console.error('desktop browser task cleanup failed', failure)
+    })
     if (this.runId !== undefined) Object.assign(error, { hostRunId: this.runId })
     this.onPlatformSession?.(null)
     this.readyReject(error)

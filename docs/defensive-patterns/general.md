@@ -195,6 +195,8 @@ The wrong form buries behavior changes inside a move, so review cannot separate 
 
 Await child exit after killing or aborting. Optional notifications may stop early; resources and listeners needed for completion or final persistence must survive until consumers settle. See the [Cordis ownership checks](../../.agents/skills/cordis-styling-nitpicking/SKILL.md#p0-cleanup-dependency-released-before-consumer-completion).
 
+Closing admission is not closing the completion channel: retain cancellation acknowledgements until participants drain. Removing settled work from a pending set does not erase its failure; joined cleanup retains that outcome.
+
 The judged condition is whether teardown awaits actual quiescence or only requests it. The boundary is work with no owner to await — a detached, unobserved task — which the teardown is not obliged to track; anything the component started and can still observe must be awaited before it reports completion.
 
 ## Contain callback exceptions in the dispatcher

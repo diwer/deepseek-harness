@@ -16,6 +16,65 @@ export interface DesktopBrowserOpenRequest {
   readonly url: string
 }
 
+/** Host-derived task identity on the private Desktop process channel; identifiers are not caller authority. */
+export interface DesktopBrowserTaskScope {
+  readonly runEpoch: string
+  readonly providerEpoch: string
+  readonly agentEpoch: string
+  readonly taskId: string
+  readonly taskEpoch: string
+  readonly sessionId: string
+}
+
+/** Allowlisted task operations; Main reserves the guest before asking the original Sidebar tree to prepare it. */
+export type DesktopBrowserTaskCommand = { readonly action: 'prepare' }
+  | { readonly action: 'navigate'; readonly lease: DesktopBrowserLeaseId; readonly url: string }
+  | { readonly action: 'screenshot'; readonly lease: DesktopBrowserLeaseId }
+  | { readonly action: 'release'; readonly lease: DesktopBrowserLeaseId }
+
+/** Command result; preparing alone grants neither native input authority nor renderer-chosen guest ownership. */
+export type DesktopBrowserTaskResult = { readonly action: 'prepared'; readonly lease: DesktopBrowserLeaseId }
+  | { readonly action: 'navigated'; readonly url: string }
+  | { readonly action: 'screenshot'; readonly png: string }
+  | { readonly action: 'released' }
+
+/** Host-to-Main request identity is separate from Main-to-Host shell control request ids. */
+export interface DesktopBrowserTaskRequest {
+  readonly type: 'browser-task/request'
+  readonly direction: 'host-to-main'
+  readonly requestId: number
+  readonly scope: DesktopBrowserTaskScope
+  readonly deadlineAt: number
+  readonly command: DesktopBrowserTaskCommand
+}
+
+/** Cancelling any request retires its whole task; acknowledgement means all admitted work and resources drained. */
+export interface DesktopBrowserTaskCancel {
+  readonly type: 'browser-task/cancel'
+  readonly direction: 'host-to-main'
+  readonly requestId: number
+  readonly scope: DesktopBrowserTaskScope
+}
+
+/** Main replies once; cancellation failures never claim quiescence. */
+export interface DesktopBrowserTaskReply {
+  readonly type: 'browser-task/reply'
+  readonly direction: 'main-to-host'
+  readonly requestId: number
+  readonly scope: DesktopBrowserTaskScope
+  readonly outcome: { readonly kind: 'result'; readonly value: DesktopBrowserTaskResult }
+    | { readonly kind: 'error'; readonly message: string }
+}
+
+/** Separate cancellation acknowledgement remains correlated even after a normal reply was sent. */
+export interface DesktopBrowserTaskCancelled {
+  readonly type: 'browser-task/cancelled'
+  readonly direction: 'main-to-host'
+  readonly requestId: number
+  readonly scope: DesktopBrowserTaskScope
+  readonly error?: string
+}
+
 /** Origin-scoped operations; no Electron objects or arbitrary IPC cross this interface. */
 export interface DesktopBrowserBridge {
   /** Optional, versioned Main attachment proof; absent on legacy manual-only bridges. */

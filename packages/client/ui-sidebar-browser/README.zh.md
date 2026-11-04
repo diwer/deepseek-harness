@@ -72,6 +72,8 @@ Desktop 主进程批准 guest 租约，并执行挂载、导航和权限策略�
 
 桥接声明 `nativeAttachment` 版本 1 时，首次导航同时等待 renderer 的 `dom-ready` 和 Main 对精确一次性租约、输入路由安装及无活动内容初始文档的确认。Main 在该文档就绪前绑定物理 guest，因此提前释放也能销毁它。挂载等待由租约持有，30 秒后超时；释放、崩溃或所属窗口退役会拒绝等待。物理移除立即取消 Client 等待；销毁操作等待租约释放完成。迟到答复不能激活替代 guest。旧版手动桥接保留仅等待 renderer 的行为。挂载确认既不授予 Agent 授权，也不转移控制权，详见[原生挂载决策](../../../.agents/notes/implemented/feature/2026-09-20-desktop-browser-webview.zh.md#native-attachment-readiness)。
 
+`/types` 声明也描述私有 Host–Main 任务消息。消息只携带关联元数据，不授予浏览器权限，也不新增 preload 方法、Tool 或 Client 自动化入口。私有任务提供方尚未接入生产链路；没有 Main handler 时，任务准备会失败，不会借用手动租约。详见[任务 IPC 决策](../../../.agents/notes/implemented/feature/2026-09-20-desktop-browser-webview.zh.md#task-ipc-authority)。
+
 页面刷新快捷键调用工具栏使用的同一重载操作。其 Tooltip 和 ARIA 组合随有效绑定更新。Desktop 通过所属窗口路由已批准 guest 中的有效快捷键；获焦 webview 必须仍持有该 guest 的租约。Web 保留浏览器专用组合。
 
 </details>

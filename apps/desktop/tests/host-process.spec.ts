@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { DesktopHostFatalError, DesktopHostProcess, DesktopHostUncleanExitError, QUIT_INSPECTION_DEADLINE_MS } from '../src/host-process.ts'
 import { OperationJournal } from '../src/operation-journal.ts'
+import type { DesktopBrowserTaskHandler } from '../src/browser-task-server.ts'
 import { readOperationHistory } from '../src/operation-history.ts'
 import { renderCrashReport } from '../src/crash-report.ts'
 
@@ -79,8 +80,10 @@ function projectWithHost(source = HTTP_HOST): string {
 
 function hostProcess(
   runtime: string, profile = runtime, onFailure?: (error: Error) => void, environment = process.env,
+  browserTaskHandler?: DesktopBrowserTaskHandler,
 ): DesktopHostProcess {
-  const host = new DesktopHostProcess(process.execPath, runtime, profile, undefined, environment, onFailure)
+  const host = new DesktopHostProcess(process.execPath, runtime, profile, undefined, environment, onFailure,
+    undefined, undefined, undefined, undefined, browserTaskHandler)
   hosts.push(host)
   return host
 }
@@ -90,7 +93,158 @@ afterEach(async () => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
+const BROWSER_TASK_HOST = `
+import { randomUUID } from 'node:crypto'
+const runEpoch = randomUUID()
+const scope = { runEpoch, providerEpoch: randomUUID(), agentEpoch: randomUUID(), taskId: randomUUID(), taskEpoch: randomUUID(), sessionId: 'fixture-session' }
+process.send({ type: 'starting', runId: runEpoch })
+process.on('message', message => {
+  if (message.type === 'shutdown') {
+    process.send({ type: 'shutdown-complete' }, () => process.disconnect())
+    return
+  }
+  if (message.type === 'browser-task/reply') {
+    if (message.outcome.kind === 'error') {
+      process.send({ type: 'ready', url: 'http://127.0.0.1:3080/?unsupported=true' })
+      return
+    }
+    process.send({ type: 'browser-task/cancel', direction: 'host-to-main', requestId: 1, scope })
+    return
+  }
+  if (message.type === 'browser-task/cancelled') {
+    process.send({ type: 'ready', url: 'http://127.0.0.1:3080/?drained=' + String(message.error === undefined) })
+  }
+})
+process.send({ type: 'browser-task/request', direction: 'host-to-main', requestId: 1, scope, deadlineAt: Date.now() + 20000, command: { action: 'prepare' } })
+`
+
 describe('desktop host process', () => {
+  it('routes reverse task IPC privately and acknowledges cancellation only after native drain', async () => {
+    const runtime = projectWithHost(BROWSER_TASK_HOST)
+    const retirementEntered = Promise.withResolvers<undefined>()
+    const nativeDrain = Promise.withResolvers<undefined>()
+    const handler: DesktopBrowserTaskHandler = {
+      execute: async () => ({ action: 'prepared', lease: 'c254ab28-97c9-4382-95e6-2db9c66f98c8' as import('@deepseek-ai/dsh-client-ui-sidebar-browser/types').DesktopBrowserLeaseId }),
+      retire: () => { retirementEntered.resolve(undefined); return nativeDrain.promise },
+    }
+    const failure = vi.fn()
+    const host = hostProcess(runtime, runtime, failure, process.env, handler)
+    let published = false
+    const ready = host.start().then((value) => { published = true; return value })
+    try {
+      await retirementEntered.promise
+      expect(published).toBe(false)
+      nativeDrain.resolve(undefined)
+      expect(new URL((await ready).url).searchParams.get('drained')).toBe('true')
+      expect(failure).not.toHaveBeenCalled()
+      await host.stop(true)
+    } finally { nativeDrain.resolve(undefined) }
+  })
+
+  it('preserves reverse cancellation acknowledgements while the real child unwinds shutdown', async () => {
+    const runtime = projectWithHost(`
+import { randomUUID } from 'node:crypto'
+const scope = { runEpoch: randomUUID(), providerEpoch: randomUUID(), agentEpoch: randomUUID(), taskId: randomUUID(), taskEpoch: randomUUID(), sessionId: 'shutdown-session' }
+process.send({ type: 'starting', runId: scope.runEpoch })
+process.on('message', message => {
+  if (message.type === 'browser-task/reply') process.send({ type: 'ready', url: 'http://127.0.0.1:3080/' })
+  if (message.type === 'shutdown') process.send({ type: 'browser-task/cancel', direction: 'host-to-main', requestId: 1, scope })
+  if (message.type === 'browser-task/cancelled') {
+    if (message.error !== undefined) throw new Error(message.error)
+    process.send({ type: 'shutdown-complete' }, () => process.disconnect())
+  }
+})
+process.send({ type: 'browser-task/request', direction: 'host-to-main', requestId: 1, scope, deadlineAt: Date.now() + 20000, command: { action: 'prepare' } })
+`)
+    const native = Promise.withResolvers<undefined>()
+    const entered = Promise.withResolvers<undefined>()
+    const failure = vi.fn()
+    const handler: DesktopBrowserTaskHandler = {
+      execute: async () => ({ action: 'prepared', lease: 'c254ab28-97c9-4382-95e6-2db9c66f98c8' as import('@deepseek-ai/dsh-client-ui-sidebar-browser/types').DesktopBrowserLeaseId }),
+      retire: () => { entered.resolve(undefined); return native.promise },
+    }
+    const host = hostProcess(runtime, runtime, failure, process.env, handler)
+    try {
+      await host.start()
+      const stopping = host.stop(true)
+      await entered.promise
+      native.resolve(undefined)
+      await stopping
+      await host.stop(true)
+      expect(failure).not.toHaveBeenCalled()
+    } finally { native.resolve(undefined) }
+  })
+
+  it.each([false, true])('reports an IPC-orphaned live child independently of exit (ready=%s)', async (ready) => {
+    const runtime = projectWithHost(`
+setInterval(() => {}, 1000)
+${ready ? "process.send({ type: 'ready', url: 'http://127.0.0.1:3080/' }, () => process.disconnect())" : 'process.disconnect()'}
+`)
+    const observed = Promise.withResolvers<Error>()
+    const failure = vi.fn((error: Error) => { observed.resolve(error) })
+    const host = hostProcess(runtime, runtime, failure)
+    try {
+      if (ready) await host.start()
+      else await expect(host.start()).rejects.toThrow('disconnected without exiting')
+      expect((await observed.promise).message).toContain('disconnected without exiting')
+      await host.stop()
+      expect(failure).toHaveBeenCalledOnce()
+    } finally { await host.stop() }
+  })
+
+  it('severs actual task IPC when asynchronous retirement fails after cancellation was queued', async () => {
+    const runtime = projectWithHost(`
+import { randomUUID } from 'node:crypto'
+import { writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+const scope = { runEpoch: randomUUID(), providerEpoch: randomUUID(), agentEpoch: randomUUID(), taskId: randomUUID(), taskEpoch: randomUUID(), sessionId: 'expired-session' }
+process.on('SIGTERM', () => {})
+process.once('disconnect', () => {
+  writeFileSync(join(process.argv[3], 'transport-disconnected'), '')
+  process.exit(0)
+})
+process.on('message', message => {
+  if (message.type === 'shutdown') process.send({ type: 'shutdown-complete' }, () => process.disconnect())
+})
+process.send({ type: 'starting', runId: scope.runEpoch })
+process.send({ type: 'browser-task/request', direction: 'host-to-main', requestId: 1, scope, deadlineAt: Date.now() - 1, command: { action: 'prepare' } })
+process.send({ type: 'browser-task/cancel', direction: 'host-to-main', requestId: 1, scope })
+// Ordered IPC makes readiness a barrier after Main has consumed the cancellation.
+process.send({ type: 'ready', url: 'http://127.0.0.1:3080/' })
+`)
+    const native = Promise.withResolvers<undefined>()
+    const observed = Promise.withResolvers<Error>()
+    const failure = vi.fn((error: Error) => { observed.resolve(error) })
+    const execute = vi.fn<DesktopBrowserTaskHandler['execute']>()
+    const host = hostProcess(runtime, runtime, failure, process.env, {
+      execute,
+      retire: () => native.promise,
+    })
+    const diagnostic = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await host.start()
+      expect(execute).not.toHaveBeenCalled()
+      native.reject(new Error('native retirement failed'))
+      expect((await observed.promise).message).toContain('native task retirement failed')
+      // The live child ignores SIGTERM: closing only the server or signalling alone cannot pass.
+      await expect.poll(() => existsSync(join(runtime, 'transport-disconnected')), { timeout: 1000 }).toBe(true)
+      expect(failure).toHaveBeenCalledOnce()
+    } finally {
+      native.reject(new Error('test cleanup'))
+      const index = hosts.indexOf(host)
+      if (index >= 0) hosts.splice(index, 1)
+      try { await expect(host.stop()).rejects.toBeInstanceOf(AggregateError) }
+      finally { diagnostic.mockRestore() }
+    }
+  })
+
+  it('returns unsupported on reverse task IPC when no native provider is installed', async () => {
+    const runtime = projectWithHost(BROWSER_TASK_HOST)
+    const host = hostProcess(runtime)
+    expect(new URL((await host.start()).url).searchParams.get('unsupported')).toBe('true')
+    await host.stop(true)
+  })
+
   it('retains the announced run identity when startup fails before readiness', async () => {
     const runtime = projectWithHost(`
 process.send({ type: 'starting', runId: 'c254ab28-97c9-4382-95e6-2db9c66f98c8' })
