@@ -82,7 +82,7 @@ The page refresh shortcut calls the same reload operation as the toolbar. Its to
 - [Right Sidebar](../../../docs/subsystems/sidebar-right.md) — tab composition, navigation, and lifecycle.
 - [Document Preview](../ui-sidebar-documentpreview/README.md) — local source, Markdown, images, HTML, and PDF rendering.
 - [Sidebar Browser decision](../../../.agents/notes/implemented/feature/2026-09-16-sidebar-browser.md) — iframe behavior and controller ownership.
-- [Desktop Browser decision](../../../.agents/notes/implemented/feature/2026-09-20-desktop-browser-webview.md) — webview leases, CWD storage grouping and manual restoration.
+- [Desktop Browser decision](../../../.agents/notes/implemented/feature/2026-09-20-desktop-browser-webview.md) — webview leases, Session storage grouping and manual restoration.
 
 -----
 
@@ -107,7 +107,7 @@ The isolation policy deliberately gives up some browser compatibility:
 - Browsers conceal many iframe failures for security: DNS, TLS, mixed-content, CSP, and `X-Frame-Options` failures may emit `load` or no actionable event instead of `error`. The load-failure notice is best-effort.
 - Saved title and URL survive reloads and plugin unload while the tab remains in Sidebar's layout. Closing the tab removes its checkpoint. Restart restoration does not recover page memory, unsaved forms or Chromium's history stack.
 - Local files are rejected and remain owned by Document Preview.
-- Desktop shares process-local storage partitions by canonical workspace CWD; Sessions without a resolved Workspace are isolated separately. Cookies and Web storage do not survive application restart. Guest permissions, downloads and native popups are denied; approved HTTP(S) popup requests open Sidebar tabs. Host-address filtering is not a general private-network or DNS-rebinding firewall.
+- Desktop shares process-local storage partitions between tabs in one DSH Session; different Sessions are isolated even when they use the same Workspace or CWD. Storage selection does not wait for Workspace readiness and grants no task authorization, automation or handoff capability. Mounted guests keep their partition; after upgrading, restart Desktop to establish fresh assignments. Cookies and Web storage do not survive application restart. Guest permissions, downloads and native popups are denied; approved HTTP(S) popup requests open Sidebar tabs. Host-address filtering is not a general private-network or DNS-rebinding firewall.
 
 <a id="dev-note"></a>
 ### Dev Note

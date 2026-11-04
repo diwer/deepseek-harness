@@ -61,7 +61,6 @@ async function boot(platform: ShortcutPlatform = 'macos', runtime: 'desktop' | '
   ctx.provide('sidebarRight', sidebar as never)
   ctx.provide('shortcuts', { register: (command: ShortcutCommand) => registry.register(command) } as never)
   ctx.provide('sidebarRightTabs', tabs as never)
-  ctx.provide('workspaces', { list: createSnapshotStore({ phase: 'ready', items: [] }) } as never)
   ctx.provide('slots', slots as never)
   ctx.provide('locale', locale as never)
   const fiber = ctx.plugin({ inject: [...inject], apply })
@@ -115,6 +114,36 @@ describe('ui-sidebar-browser apply', () => {
     } finally {
       await h.fiber.dispose()
       host.remove()
+    }
+  })
+
+  it('allocates native storage by owning Session without a Workspace service', async () => {
+    let nextLease = 0
+    const acquire = vi.fn(async () => ({ lease: `test-lease-${++nextLease}` as DesktopBrowserLeaseId, partition: 'test-partition' }))
+    const bridge: DesktopBrowserBridge = {
+      acquire, release: vi.fn(async () => {}), onOpenRequested: vi.fn(() => () => {}),
+    }
+    vi.stubGlobal('dshDesktop', { protocolVersion: 1, browser: bridge })
+    const h = await boot()
+    const injectFace = h.registered.find(entry => entry.name === 'sidebar.right.pane.tab')!.inject as
+      (sessionId: string, actions: Parameters<BrowserInjected['rebind']>[0]) => BrowserInjected
+    const hosts: HTMLElement[] = []
+    try {
+      for (const [index, sessionId] of ['first', 'first', 'second'].entries()) {
+        const host = document.createElement('div')
+        host.id = `browser-session-${index}`
+        document.body.append(host)
+        hosts.push(host)
+        const controller = injectFace(sessionId, createBrowserStore().create(`storage-${sessionId}`).actions)
+        controller.mount({ tabId: `tab-${index}` as TabId, signal: new AbortController().signal,
+          viewportId: host.id, applicationOrigin: 'https://dsh.example', initial: undefined,
+          initialUrl: 'https://example.test/', openTab: vi.fn() })
+      }
+      await vi.waitFor(() => { expect(acquire).toHaveBeenCalledTimes(3) })
+      expect(acquire.mock.calls).toEqual([['session:first'], ['session:first'], ['session:second']])
+    } finally {
+      await h.fiber.dispose()
+      for (const host of hosts) host.remove()
     }
   })
 

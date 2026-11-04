@@ -36,7 +36,7 @@ Tab 提供 Body 保活持有，而不独立申请会话引用。View 的稳定 `
 
 `BrowserFrame` 仍只负责导航与可观察页面状态。Presentation 创建、挂载载体 DOM，不了解 Pane、裁剪或层叠。Electron 提供方接收物理 attach/detach 回调：隐藏保活内容不触发这些回调，真正卸载则取消未完成的挂载并释放 guest；之后再次物理挂载时从已知地址重建。dispose（资源释放）会等待未完成的创建和 guest 释放，取消后才完成的申请只释放、不挂载。
 
-[Desktop Browser 决策](../feature/2026-09-20-desktop-browser-webview.zh.md)继续负责 guest 安全、共享 IPC 声明和 Workspace 分区所有权。不同 Tab 和会话不能因为共享存储分区就共享一个页面实例。Web 默认仍关闭，显式启用时继续使用 iframe 载体。
+[Desktop Browser 决策](../feature/2026-09-20-desktop-browser-webview.zh.md)继续负责 guest 安全与共享 IPC 声明；[Session 存储决策](../feature/2026-11-04-browser-session-storage.zh.md)负责分区共享。不同 Tab 和会话不能因为共享存储分区就共享一个页面实例。Web 默认仍关闭，显式启用时继续使用 iframe 载体。
 
 ### 保活与恢复
 

@@ -4,6 +4,8 @@ Status: implemented
 
 [English](2026-09-20-desktop-browser-webview.md) | 中文
 
+存储所有权决定已由[按 Session 隔离的浏览器存储](2026-11-04-browser-session-storage.zh.md)部分替代。下文的 Workspace/CWD 存储理由保留原始决定；载体、guest 安全与生命周期决定仍然有效。
+
 ## Problem
 
 iframe 无法提供跨域导航状态, 也无法显示拒绝嵌入的站点. 如果 Tab Body 因选中项或容器变化而卸载, Electron guest 就会丢失表单、滚动位置与原生 history. 页面生命周期因此必须独立于可见性和布局变化.

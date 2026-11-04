@@ -5,7 +5,6 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
-import type {} from '@deepseek-ai/dsh-api-workspace-controller/client'
 import { BrowserBody, type BrowserBodyProps } from './view/BrowserBody.tsx'
 import { BrowserTitle } from './view/BrowserTitle.tsx'
 import { createBrowserControllers } from './browser/BrowserController.ts'
@@ -13,7 +12,7 @@ import type { BrowserInjected } from './browser/BrowserController.ts'
 import { createIframePage } from './pages.ts'
 import { createElectronPage } from './electron/pages.ts'
 import type { DesktopBrowserBridge } from '../types.ts'
-import { browserWorkspace } from './electron/workspace.ts'
+import { browserSessionStorage } from './electron/storage.ts'
 import type { BrowserPageFactory } from './browser/BrowserPage.ts'
 import { BROWSER_ID, browserDefinition } from './definition.tsx'
 import { en, ja, es, fr, de, ru, pt, zh } from './locales.ts'
@@ -95,10 +94,8 @@ export function apply(ctx: Context): void {
     }, BrowserBody)), 'ui-sidebar-browser.body')
   }
   if (desktop === undefined) installFrames(ctx, () => createIframePage)
-  else ctx.inject(['workspaces'], (scope) => {
-    installFrames(scope, sessionId => options => createElectronPage(options, desktop,
-      signal => browserWorkspace(scope.workspaces.list, sessionId, signal)))
-  })
+  else installFrames(ctx, sessionId => options => createElectronPage(options, desktop,
+    signal => browserSessionStorage(sessionId, signal)))
   ctx.effect(() => ctx.slots.inject('sidebar.right.pane.tab.title', () => ctx.slots.register({
     name: 'sidebar.right.pane.tab.title', key: BROWSER_ID, store,
   }, BrowserTitle)), 'ui-sidebar-browser.title')
