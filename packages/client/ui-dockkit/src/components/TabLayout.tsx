@@ -12,10 +12,17 @@ import { TabBody } from './TabBody.tsx'
 import { PaneDropHints, TabPanel, TabStrip } from './TabPanel.tsx'
 import css from './dockkit.module.css'
 
-/** Host policy for lazily retaining a tab body without reparenting it. */
+/** Host policy for mounting and retaining tab bodies without reparenting them. */
 export interface TabRetention {
   /** Whether a visited body survives hiding; omitted means visibility-mounted. */
   readonly keepMounted?: (tab: TabRecord) => boolean
+  /**
+   * Mount this body even when unseen or inactive, counting it as visited without changing visibility or focus.
+   * Releasing the request restores normal retention.
+   */
+  readonly mountRequested?: (tab: TabRecord) => boolean
+  /** Body lifetime identity; defaults to tab.id. Changes reset visitation, not the host DOM. */
+  readonly bodyKey?: (tab: TabRecord) => string
   /** Whether this layout's Session is on screen; defaults to true. */
   readonly active?: boolean
 }
@@ -39,13 +46,17 @@ interface TabHostProps extends LayoutProps {
 
 /** A tab's ancestors stay identical across selection, pane moves and floating. */
 function TabHost({ state, callbacks, intents, tab, pane, column, floats, focusRequest, offsets, keepMounted,
-  active = true }: TabHostProps): ReactNode {
+  mountRequested, bodyKey, active = true }: TabHostProps): ReactNode {
   const floating = pane.host === 'float'
   const selected = floating || pane.activeTabId === tab.id
   const visible = active && selected && (floating || state.expanded)
   const retained = keepMounted?.(tab) ?? false
-  const [visited, setVisited] = useState(visible)
-  if (visible && !visited) setVisited(true)
+  const requested = mountRequested?.(tab) ?? false
+  const key = bodyKey?.(tab) ?? tab.id
+  const [visit, setVisit] = useState({ key, visited: visible || requested })
+  const visited = visit.key === key && visit.visited
+  if (visit.key !== key) setVisit({ key, visited: visible || requested })
+  else if ((visible || requested) && !visited) setVisit({ key, visited: true })
   const host = useRef<HTMLElement | null>(null)
   const body = useRef<HTMLDivElement | null>(null)
   useLayoutEffect(() => {
@@ -83,7 +94,7 @@ function TabHost({ state, callbacks, intents, tab, pane, column, floats, focusRe
       data-dockkit-host={floating ? 'float' : 'dock'} data-dockkit-column={floating ? undefined : column}
       style={{ gridColumn: floating ? 1 : column * 2 + 1, gridRow: 1, order: floating ? depth : 0 }}>
       <section ref={host} tabIndex={-1} className={clsx(css.tabHost, floating ? css.float : css.pane)}
-        aria-hidden={!visible || undefined}
+        aria-hidden={!visible || undefined} {...{ inert: visible ? undefined : '' }}
         data-dockkit-content={tab.id}
         data-dockkit-pane={!floating && selected ? pane.id : undefined}
         data-dockkit-pane-active={!floating && state.activePaneId === pane.id || undefined}
@@ -100,7 +111,8 @@ function TabHost({ state, callbacks, intents, tab, pane, column, floats, focusRe
             : <TabStrip state={state} pane={pane} callbacks={callbacks} offsets={offsets} />)}
         </div>
         <div ref={body} className={clsx(css.tabHostBody, floating ? css.floatBody : css.paneBody)}>
-          {visited && (retained || (active && selected)) ? <TabBody tab={tab} renderTab={callbacks.renderTab} /> : null}
+          {requested || (visited && (retained || (active && selected)))
+            ? <TabBody key={key} tab={tab} renderTab={callbacks.renderTab} /> : null}
           {!floating && <PaneDropHints pane={pane} callbacks={callbacks} />}
         </div>
         {floating && <div className={css.floatResize} data-dockkit-float-resize={pane.id}

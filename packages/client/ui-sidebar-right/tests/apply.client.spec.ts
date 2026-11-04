@@ -10,6 +10,7 @@
  */
 import { describe, expect, it, onTestFinished, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
+import { TestSessions } from '@deepseek-ai/dsh-client-test-runtime'
 import { MenuRegistry } from '@deepseek-ai/dsh-client-ui-context-menu/src/client/registry.ts'
 import { IconCloseOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
@@ -83,7 +84,16 @@ async function boot(shortcuts: Partial<Shortcuts> = {}) {
     catalog: { getSnapshot: () => SHORTCUT_CATALOG, subscribe: () => () => {} }, ...shortcuts } as never)
   ctx.provide('layout', layout as never)
   ctx.provide('resources', resources as never)
-  ctx.provide('sessions', { retain: vi.fn(() => ({ ready: Promise.resolve(), release: vi.fn() })) } as never)
+  const sessions = new TestSessions(async (work) => { await work() }, ctx)
+  ctx.provide('sessions', sessions)
+  for (const id of [SESSION, 's-other' as SessionId]) {
+    await sessions.add({ id })
+    sessions.retainFor(ctx, id)
+  }
+  onTestFinished(async () => {
+    await sessions.disposeScopes()
+    await ctx.fiber.dispose()
+  })
   ctx.provide('uiSession', { adapter: { current } } as never)
   const fiber = ctx.plugin({ inject: [...inject], apply })
   await fiber.await()
@@ -96,7 +106,7 @@ async function boot(shortcuts: Partial<Shortcuts> = {}) {
     if (entry.inject === undefined) throw new Error(`expected ${entry.name} to inject`)
     return entry.inject(SESSION)
   }
-  return { ctx, menus, slots, registered, dictionaries, layout, current, resources, fiber, seat, injectedOf }
+  return { ctx, sessions, menus, slots, registered, dictionaries, layout, current, resources, fiber, seat, injectedOf }
 }
 
 describe('ui-sidebar-right apply', () => {
@@ -156,9 +166,10 @@ describe('ui-sidebar-right apply', () => {
   })
 
   it('names the selected Session as on screen while the Conversation fills the main column', async () => {
-    const { ctx, layout, current } = await boot()
+    const { ctx, sessions, layout, current } = await boot()
     expect(ctx.sidebarRight.mounted.getSnapshot()).toBeUndefined()
     current.set({ key: SESSION })
+    await sessions.retainFor(ctx, SESSION).ready
     expect(ctx.sidebarRight.mounted.getSnapshot()).toBe(SESSION)
     layout.panelInfo.set({ activePanelId: 'plugins' })
     expect(ctx.sidebarRight.mounted.getSnapshot()).toBeUndefined()
@@ -169,7 +180,7 @@ describe('ui-sidebar-right apply', () => {
   })
 
   it('hands the panel seat the frame report, the room rule, the opens, the observable registry, and the Tab domain', async () => {
-    const { ctx, layout, current, resources, seat, injectedOf } = await boot()
+    const { ctx, sessions, layout, current, resources, seat, injectedOf } = await boot()
     const injected = injectedOf(seat('rightbar.session')) as SidebarRightInjected
     // The frame learns the composition of expanded and presentation, nothing else.
     injected.syncPresentation({ shown: true, track: true, fullscreen: false })
@@ -198,6 +209,7 @@ describe('ui-sidebar-right apply', () => {
     injected.toggleFullscreen()
     expect(injectedOf(seat('conversation.session.header.corner'))).toHaveProperty('hooks.shortcuts')
     current.set({ key: SESSION })
+    await sessions.retainFor(ctx, SESSION).ready
     injected.openTab('guide', { revealIfOpened: false })
     const surface = instance.getSnapshot().bySession[SESSION]
     expect(surface?.layout.expanded).toBe(true)
@@ -324,12 +336,13 @@ describe('ui-sidebar-right apply', () => {
   })
 
   it('takes every registration and both faces back when disposed, aborting the open records, so a reload registers again', async () => {
-    const { ctx, registered, dictionaries, current, fiber, seat, injectedOf } = await boot()
+    const { ctx, sessions, registered, dictionaries, current, fiber, seat, injectedOf } = await boot()
     const injected = injectedOf(seat('rightbar.session')) as SidebarRightInjected
     const handle = seat('rightbar.session').store as ReturnType<typeof createSidebarRightStore>
     // Minted under the session key, so the instance is adopted and the teardown releases it.
     const instance = handle.create(SESSION)
     current.set({ key: SESSION })
+    await sessions.retainFor(ctx, SESSION).ready
     injected.openTab('guide')
     const surface = instance.getSnapshot().bySession[SESSION]
     const guide = Object.values(surface?.layout.tabs ?? {})[0]

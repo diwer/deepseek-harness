@@ -64,7 +64,9 @@ kind: "package-reference"
 
 tab 的 `kind` 是不透明字符串。种子 tab 是工厂（`DockControllerOptions`），因此新格里放什么由嵌入方决定，与本包无关。内容身份是二元组（`kind`、`contentId`）：`findContentTab(state, contentId, kind?)` 在任意位置找到展示它的 tab，`findPaneContentTab(state, paneId, contentId, kind?)` 在一个格内找；`planOpenContent` 会聚焦该 tab 而非再开一个，除非被告知 `revealIfOpened: false`；显式的 `index` 把新 tab 放到 tab 条的某个位置而非末尾。
 
-Sidebar 使用的 `DockLayout` 在选中项变化、跨格移动与浮动期间，把每个 tab 保留在稳定的 DOM 容器中。它接受一个停靠格或左右两个格，由 CSS Grid 计算宽度。`keepMounted(tab)` 保留已访问正文，`active` 控制 Session 可见性，不改变内容的父子关系。
+Sidebar 使用的 `DockLayout` 在选中项变化、跨格移动与浮动期间，把每个 tab 保留在稳定的 DOM 容器中。它接受一个停靠格或左右两个格，由 CSS Grid 计算宽度。`keepMounted(tab)` 保留已访问正文，但不会首次挂载尚未显示的 tab；`active` 控制 Session 可见性，不改变内容的父子关系。
+
+`mountRequested(tab)` 为 true 期间会挂载正文，即使 Session 非活动或 tab 未被选中，也不改变选中项、布局、可见性或焦点。请求算作一次访问；释放后恢复正常保留策略。`bodyKey(tab)` 标识正文生命周期，默认使用 `tab.id`。为新生命周期复用 tab id 的嵌入方须持续提供该身份，包括没有挂载请求时。key 变化会重置访问记录并仅替换正文，保留其宿主 DOM；key 不变时，已保留正文在请求释放、导航、跨格移动与浮动期间保持不变。
 
 `DockSurface` 是独立递归渲染器的停靠区。它周围的 chrome——轨道、折叠形态、任何历史控件——属于嵌入方，由嵌入方读取 `state.expanded` 后自行决定；套件不自带撤销/重做控件。嵌入方确实想放到面上的整面控件通过 `chrome` prop 传入，套件把它放在右上格 tab 条的最末端（每个横向分裂的最后一个子节点、每个纵向分裂的第一个子节点），因此停靠面不需要自己的标题行。`FloatLayer` 拥有自己的手势并以视口坐标定位浮窗，因此可以挂在任何位置，包括 portal 里。 静止时两种浮窗渲染器都让标题栏与 Windows 顶栏至少间隔 20px（原生全屏时距视口顶部 20px），新建和恢复的浮窗均适用。拖动和调整大小从实际显示位置开始。
 

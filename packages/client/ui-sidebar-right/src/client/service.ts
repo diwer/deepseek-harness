@@ -62,7 +62,7 @@ export interface SidebarRightSurfaceStore {
 /** One adoption of a session's store; the token a release compares against. */
 interface Adoption {
   readonly store: SidebarRightSurfaceStore
-  readonly unsubscribe: () => void
+  readonly release: () => void
 }
 
 /** The room rule's verdict for a docked pane, as a seat's docking kit last measured it: whether two working halves would fit. */
@@ -113,19 +113,40 @@ export function createSidebarRightController(tabs: SidebarRightTabRegistry, pin:
     show: (sessionId) => { if (onScreen.getSnapshot() !== sessionId) onScreen.set(sessionId) },
     measure: (sessionId, canSplitPane) => { rooms.set(sessionId, canSplitPane) },
     adopt(sessionId, store) {
-      adopted.get(sessionId)?.unsubscribe()
+      const previous = adopted.get(sessionId)
+      let active = true
+      let unsubscribe: (() => void) | undefined
+      const adoption: Adoption = { store, release: () => {
+        if (!active) return
+        active = false
+        unsubscribe?.()
+        if (adopted.get(sessionId) !== adoption) return
+        adopted.delete(sessionId)
+        controller.tabDomain.forgetSession(sessionId)
+      } }
+      const isCurrent = (): boolean => active && adopted.get(sessionId) === adoption
       const sync = (): void => {
+        if (!isCurrent()) return
         const surface = store.getSnapshot().bySession[sessionId]
+        if (!isCurrent()) return
         inventory.update(sessionId, Object.values(surface?.layout.tabs ?? {}))
-        if (surface !== undefined) controller.tabDomain.sync(sessionId, surface.layout)
+        if (isCurrent() && surface !== undefined) controller.tabDomain.sync(sessionId, surface.layout)
       }
-      const adoption: Adoption = { store, unsubscribe: store.subscribe(sync) }
+      // Reserve before cleanup publishes; a newer reentrant adoption supersedes this setup.
       adopted.set(sessionId, adoption)
-      sync()
-      return () => {
-        adoption.unsubscribe()
-        if (adopted.get(sessionId) === adoption) adopted.delete(sessionId)
+      try {
+        previous?.release()
+        if (!isCurrent()) return adoption.release
+        controller.tabDomain.forgetSession(sessionId)
+        if (!isCurrent()) return adoption.release
+        unsubscribe = store.subscribe(sync)
+        if (isCurrent()) sync()
+        else unsubscribe()
+      } catch (error) {
+        adoption.release()
+        throw error
       }
+      return adoption.release
     },
   }
 }

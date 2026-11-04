@@ -19,6 +19,7 @@ import { registerSidebarShortcuts } from '../src/client/shortcuts.ts'
 import { ShortcutRegistry } from '@deepseek-ai/dsh-client-shortcuts/src/client/registry.ts'
 import type { SidebarRightTabInfo, SidebarRightTabMenuOwnerProps } from '../src/client/contract/slots.ts'
 import type { createSidebarRightStore } from '../src/client/stores.ts'
+import { SidebarSessionViews } from '../src/client/session-views.ts'
 
 declare module '../src/client/contract/params.ts' {
   interface SidebarRightResourceParamsMap {
@@ -324,6 +325,100 @@ it('rebinds a restored Session Tab lifetime even when close and undo share one r
   expect(document.querySelector('[data-restored-tab]')).not.toBe(original)
   expect(original.isConnected).toBe(false)
   expect(document.querySelector('[data-restored-tab]')?.textContent).toBe('0')
+})
+
+describe('explicit background first-body demand through the original seat', () => {
+  it('prepares a never-selected Session and preserves its body through release and later preview', async () => {
+    // Observe the existing private owner without adding a public preparation API.
+    const views = vi.spyOn(SidebarSessionViews.prototype, 'select')
+    const h = await mountSeat(1440, true, 0, false, true)
+    const controller = h.controller
+    const foreground = h.open('foreground.txt')
+    const foregroundBody = element(h.view.container, `[data-tab-body="${foreground.id}"]`)
+    const selected = h.controller.mounted.getSnapshot()
+    const before = h.layout()
+    const input = document.createElement('input')
+    h.view.container.append(input)
+    input.focus()
+    await act(async () => { await h.runtime.sessions.add({ id: OTHER }) })
+    const owner = views.mock.contexts[0]
+    if (!(owner instanceof SidebarSessionViews)) throw new Error('expected original Session-view owner')
+    const preparation = new AbortController()
+    let hold: ReturnType<SidebarSessionViews['hold']> | undefined
+    await act(async () => {
+      hold = owner.hold(OTHER, preparation.signal)
+      await hold.reference.ready
+    })
+    const address = `dsh-resource://file/session/${OTHER}/background.txt`
+    act(() => { controller.openResourceIn(OTHER, address) })
+    // Opening succeeds only after the real original renderer has adopted B's Store;
+    // do not use storeOf(), which can resolve a Store itself and mask missing adoption.
+    const tab = controller.tabsIn(OTHER).find(record => record.contentId === address)
+    if (tab === undefined) throw new Error('expected actual background Store adoption')
+    const background = element(h.view.container, `[data-sidebar-right-session="${OTHER}"]`)
+    expect(background.querySelector(`[data-tab-body="${tab.id}"]`)).toBeNull()
+    const occurrence = controller.tabDomain.occurrence(OTHER, tab)
+    let release = () => {}
+    act(() => { release = controller.tabDomain.requestBodyMount(occurrence, preparation.signal) })
+    const body = element(background, `[data-tab-body="${tab.id}"]`)
+    const host = body.closest<HTMLElement>('[data-dockkit-host]')!
+    const parent = body.parentElement
+    const section = body.closest<HTMLElement>('[data-dockkit-content]')!
+    expect(background.hidden).toBe(true)
+    expect(section.inert).toBe(true)
+    expect(section.getAttribute('aria-hidden')).toBe('true')
+    expect(h.bodies.get(tab.id)?.tab.visible).toBe(false)
+    expect(h.controller.mounted.getSnapshot()).toBe(selected)
+    expect(h.layout()).toBe(before)
+    expect(document.activeElement).toBe(input)
+    expect(foregroundBody.isConnected).toBe(true)
+    expect(foregroundBody.closest<HTMLElement>('[data-dockkit-content]')?.inert).toBe(false)
+    act(() => { release(); hold?.release() })
+    expect(element(background, `[data-tab-body="${tab.id}"]`)).toBe(body)
+    act(() => { h.selectSession(OTHER) })
+    expect(element(background, `[data-tab-body="${tab.id}"]`)).toBe(body)
+    expect(body.parentElement).toBe(parent)
+    expect(body.closest('[data-dockkit-host]')).toBe(host)
+    expect(body.closest('[data-dockkit-content]')).toBe(section)
+    expect(section.inert).toBe(false)
+    act(() => { controller.closeIn(OTHER, tab.id) })
+    expect(occurrence.signal.aborted).toBe(true)
+    expect(body.isConnected).toBe(false)
+    preparation.abort()
+  })
+
+  it('cancels before first commit and does not inherit a demanded lifetime across batched close/undo', async () => {
+    const h = await mountSeat(1440, true, 0, false, true)
+    const controller = h.controller
+    const foreground = h.open('foreground.txt')
+    act(() => {
+      h.controller.openResource('dsh-resource://file/session/s-test/unvisited.txt')
+      h.controller.focus(foreground.id)
+    })
+    const tab = controller.tabsIn(SESSION).find(record => record.title === 'unvisited.txt')
+    if (tab === undefined) throw new Error('expected unvisited background tab')
+    const occurrence = controller.tabDomain.occurrence(SESSION, tab)
+    const cancelled = new AbortController()
+    act(() => {
+      controller.tabDomain.requestBodyMount(occurrence, cancelled.signal)
+      cancelled.abort()
+    })
+    expect(h.bodies.has(tab.id)).toBe(false)
+    let release = () => {}
+    act(() => { release = controller.tabDomain.requestBodyMount(occurrence, new AbortController().signal) })
+    const original = element(h.view.container, `[data-tab-body="${tab.id}"]`)
+    act(() => { controller.closeIn(SESSION, tab.id); h.controller._undo() })
+    const restored = controller.tabDomain.occurrence(SESSION, tab)
+    expect(restored.id).not.toBe(occurrence.id)
+    expect(original.isConnected).toBe(false)
+    expect(h.view.container.querySelector(`[data-tab-body="${tab.id}"]`)).toBeNull()
+    act(release)
+    let next = () => {}
+    act(() => { next = controller.tabDomain.requestBodyMount(restored, new AbortController().signal) })
+    expect(element(h.view.container, `[data-tab-body="${tab.id}"]`)).not.toBe(original)
+    expect(h.controller.active()?.id).toBe(foreground.id)
+    act(next)
+  })
 })
 
 function element(container: HTMLElement, selector: string): HTMLElement {

@@ -48,7 +48,7 @@ import type { SidebarRightFlash, SidebarRightOpenTabOptions } from '../service.t
 import type { SidebarRightTabDefinition } from '../tab-registry.ts'
 import type { createSidebarRightStore, SurfaceState } from '../stores.ts'
 import { canCloseTab } from '../stores.ts'
-import type { TabOccurrence } from '../tab-domain.ts'
+import type { SidebarRightOccurrenceId, TabOccurrence } from '../tab-domain.ts'
 import type { SidebarRightTabNavigation } from '../contract/slots.ts'
 import type { TabHookContext } from '../tab-info.ts'
 import { flashPane } from './flash.ts'
@@ -111,6 +111,8 @@ export interface SidebarRightInjected {
     readonly contextMenuTarget: HostObservable<ContextMenuTarget | null>
     readonly shortcuts: HostObservable<readonly ShortcutCatalogEntry[]>
     readonly tabTypes: HostObservable<readonly SidebarRightTabDefinition[]>
+    /** Exact occurrence lifetimes explicitly requested for first-body initialization. */
+    readonly bodyMounts: HostObservable<readonly SidebarRightOccurrenceId[]>
     /** This Session's latest request to make the pane holding a revealed tab glow. */
     readonly flash: HostObservable<SidebarRightFlash | undefined>
   }
@@ -147,6 +149,7 @@ interface PanelProps {
   readonly useTabNavigation: RightbarSeatProps['useTabNavigation']
   readonly useStore: Store['useStore']
   readonly useFlash: RightbarSeatProps['useFlash']
+  readonly useBodyMounts: RightbarSeatProps['useBodyMounts']
   readonly occurrence: SidebarRightInjected['occurrence']
   readonly fullscreen: boolean
   readonly autoFullscreen: boolean
@@ -314,6 +317,7 @@ function SidebarPanel(panel: PanelProps & { width: number; panelRef: RefObject<H
   const { expanded } = surface.layout
   const types = panel.useTabTypes(value => value)
   const flash = panel.useFlash(value => value)
+  const bodyMounts = panel.useBodyMounts(value => value)
   // Each request plays at most once, and only on screen: the request current
   // when the panel mounts, or one arriving while its Session is hidden, is
   // already past. Hiding the Session ends a glow in progress.
@@ -363,6 +367,8 @@ function SidebarPanel(panel: PanelProps & { width: number; panelRef: RefObject<H
           renderTabTitle={titlesFor(panel)}
           active={panel.active}
           keepMounted={tab => types.find(type => type.kind === tab.kind)?.keepMounted === true}
+          bodyKey={tab => panel.occurrence(tab).id}
+          mountRequested={tab => bodyMounts.includes(panel.occurrence(tab).id)}
           getTabTriggerProps={panel.getTabTriggerProps} tabMenuOpen={panel.tabMenuOpen}
           chrome={<PanelChrome
             sessionId={sessionId} fullscreen={fullscreen} actions={actions} t={t}
@@ -385,7 +391,7 @@ function SidebarPanel(panel: PanelProps & { width: number; panelRef: RefObject<H
 export function RightbarSeat({
   sessionId, width, viewportWidth, canShow, useStore, actions, t, renderSlot, syncPresentation, measureRoom, reportAutoFullscreen,
   openTab, closeTab, useContextMenu, useContextMenuTarget, useTabTypes, useTabNavigation, occurrence, retainTab,
-  active, useShortcuts, splitPane, toggleFullscreen, useFlash,
+  active, useShortcuts, splitPane, toggleFullscreen, useFlash, useBodyMounts,
 }: RightbarSeatProps): ReactNode {
   const { getTriggerProps } = useContextMenu()
   const getTabTriggerProps: PanelProps['getTabTriggerProps'] = (tab, paneId, handlers) =>
@@ -455,7 +461,7 @@ export function RightbarSeat({
   if (surface === undefined) return null
   const panel: PanelProps = {
     sessionId, actions, t, renderSlot, surface, openTab, closeTab, getTabTriggerProps, tabMenuOpen, useTabTypes, useTabNavigation,
-    useStore, useFlash, occurrence,
+    useStore, useFlash, useBodyMounts, occurrence,
     fullscreen, autoFullscreen, reportRoom, active, retainTab, shortcuts, splitPane, toggleFullscreen,
   }
   return <SidebarPanel {...panel} width={width} panelRef={panelRef} />

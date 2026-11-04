@@ -7,7 +7,9 @@
  * @param signal - guest initialization lifetime.
  * @returns the process-local storage account for this Session.
  */
-export async function browserSessionStorage(sessionId: string, signal: AbortSignal): Promise<string> {
-  signal.throwIfAborted()
-  return `session:${sessionId}`
+export function browserSessionStorage(sessionId: string, signal: AbortSignal): Promise<string> {
+  return new Promise((resolve) => {
+    signal.throwIfAborted()
+    resolve(`session:${sessionId}`)
+  })
 }

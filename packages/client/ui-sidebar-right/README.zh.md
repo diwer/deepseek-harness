@@ -109,9 +109,11 @@ tab 类型分两阶段注册，随包发布的引导类型走的正是别的包�
 <a id="the-tab-domain"></a>
 ## Tab 域
 
-Tab 域按（Session，Tab id）保留品牌化 occurrence id、导航、中止信号与绑定动作。私有装配回调采用各 Session 的 store，立即对齐恢复的记录，再跟随其提交。同一 Session 的 store 重建会替换其 `adopt` 注册，同时释放旧订阅与清理引用。记录消失或插件卸载才中止 signal，收起和切会话不销毁记录；undo 恢复的是新 occurrence。`useTabInfo()` 组合框架绑定的 store 与导航 hook，不在组件中手写订阅或在渲染时创建记录。`tab.actions` 始终作用于自己的会话；`tab.visible` 区分正文与标题，并排除后台 Session；前台浮窗不受整栏收起影响。`adopt` 不在公开控制器上。
+Tab 域按（Session，Tab id）保留品牌化 occurrence id、导航、中止信号与绑定动作。私有装配回调在精确的活动 Session binding 下采用各 Session 的 store，立即对齐恢复的记录，再跟随其提交。重建或撤回 Store 会立即退休其 occurrence，不等替代者创建 surface。旧代次的清理不会撤回替代者；插件卸载会从仍活动的 Session Context 注销自己的回调。收起和切会话不销毁记录；undo 恢复的是新 occurrence。`useTabInfo()` 组合框架绑定的 store 与导航 hook，不在组件中手写订阅或在渲染时创建记录。`tab.actions` 始终作用于自己的会话；`tab.visible` 区分正文与标题，并排除后台 Session；前台浮窗不受整栏收起影响。`adopt` 不在公开控制器上。
 
-类型声明 `keepMounted: true` 后，已访问正文会在切 tab、切 Session、收起和停靠切换期间保留。每个 View 通过 owner props 提供自身稳定的持有回调，因此 Session injection binding 重建不会释放正文。未访问的正文不会提前挂载。
+类型声明 `keepMounted: true` 后，已初始化正文会在切 tab、切 Session、收起和停靠切换期间保留。每个 View 通过 owner props 提供自身稳定的持有回调，因此 Session injection binding 重建不会释放正文。未访问的正文不会提前挂载。
+
+内部、响应取消的首次正文需求可以通过同一棵树初始化一个精确、已提交的 occurrence。独立请求分别计数；取消或 occurrence 退休会移除各自需求及两个 abort 监听。框架注入的 observable 驱动 Dockkit 的 `mountRequested`，不改变选中、可见性、焦点、布局或 host 祖先。初始化后，`keepMounted` 正文在请求结束后自行保活；其他类型恢复按可见性挂载。Sidebar 始终将 occurrence 作为 Dockkit 的 `bodyKey`，因此同批关闭再撤销即使复用了 tab id，也不能继承旧正文的访问状态或需求。撤回和重入的 Store 提交会取代旧协调，阻止它继续发布或 pin 过期 occurrence。
 
 标签页所有者通过 effect 注册 `registerCloseHandler(kind, handler)`。handler 在允许显式关闭或替换前同步保存后台清理任务。资源所有者跟踪完成和重试，侧栏不等待清理。handler 抛错时保留标签页。折叠、展示方式改变和插件卸载不调用关闭 handler；tab abort signal 标识 occurrence 卸载，不代表显式关闭。
 
@@ -154,7 +156,7 @@ root 作用域的 `sidebar.right.tab.guide.actions` list 有注册项时，引�
 - **没有会话就没有停靠面。** 状态按会话 id 键控，因此 hero 画面右侧什么都不显示。
 - **硬编码的层叠。** 内容树使用固定层叠层；浮窗在该层内重排，不会把整层抬到菜单之上。
 - **保活 Session 的删除。** 仅从目录消失不会使保活 View 退休；释放由 tab 生命周期、独立需求和插件卸载负责。
-- **后台任务打开。** 内部视图需求不提供公开的任务入口、不等待 store 接管、不初始化未访问的 tab 正文，也不授予浏览器自动化权限。
+- **后台任务打开。** 内部渲染原语仍不提供公开任务入口，也不提供可取消的实际 store 接管及 guest 就绪屏障，更不授予浏览器自动化权限。
 - **未暴露撤销。** 记录的序列只能通过 `@internal` 服务方法步进；产品控件是有意缺席的。
 - **标题在打开时固定。** 类型的 `title(address)` 被捕获进记录；会变的标题只来自可选的标题席位。
 - **没有内容导航栈。** 后退回放的是布局操作；编辑器式的「已访问内容」前进/后退尚未构建。

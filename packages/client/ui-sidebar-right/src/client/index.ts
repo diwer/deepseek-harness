@@ -43,6 +43,7 @@ import { RightbarSeat, type SidebarRightInjected } from './shell/SidebarRight.ts
 import { closeWithPaneFocus, openWithPaneFocus } from './shell/close-focus.ts'
 import { RightbarRoot, type RightbarRootInjected } from './shell/RightbarRoot.tsx'
 import { SidebarSessionViews } from './session-views.ts'
+import { SidebarStoreAdoptions } from './store-adoptions.ts'
 import { createSidebarRightController, type SidebarRightController } from './service.ts'
 import { SidebarRightTabRegistry } from './tab-registry.ts'
 import { createSidebarRightStore } from './stores.ts'
@@ -201,15 +202,16 @@ export function apply(ctx: ClientContext): void {
     const handle = createSidebarRightStore(() => defaultSeed(tabs))
     // Each Session Context generation owns one Store. Background tab actions
     // use the latest adoption for that Session.
-    const adoptions = new Map<SessionId, () => void>()
+    const adoptions = new SidebarStoreAdoptions(adopt)
     const store: typeof handle = {
       ...handle,
       create: (scopeKey) => {
         const instance = handle.create(scopeKey)
         if (scopeKey !== undefined) {
           const sessionId = scopeKey as SessionId
-          adoptions.get(sessionId)?.()
-          adoptions.set(sessionId, adopt(sessionId, instance))
+          const binding = ctx.sessions.binding(sessionId)
+          if (binding === undefined) throw new Error('sidebarRight: Store creation requires a live Session binding')
+          adoptions.adopt(binding, instance)
         }
         return { ...instance, clearPersisted() {
           instance.clearPersisted()
@@ -251,6 +253,7 @@ export function apply(ctx: ClientContext): void {
           ...injected,
           hooks: {
             contextMenuTarget: ctx.contextMenus.active, shortcuts: ctx.shortcuts.catalog, tabTypes, flash: controller.flashOf(sessionId),
+            bodyMounts: controller.tabDomain.bodyMountsOf(sessionId),
           },
           measureRoom: (canSplitPane) => { measure(sessionId, canSplitPane) },
           closeTab: (tabId) => {
@@ -312,8 +315,7 @@ export function apply(ctx: ClientContext): void {
       disposeExpand()
       disposeSeat()
       for (const dispose of disposeTypes.reverse()) dispose()
-      for (const release of adoptions.values()) release()
-      adoptions.clear()
+      adoptions.dispose()
     }
   }, 'ui-sidebar-right: seats and shipped tab type')
 }

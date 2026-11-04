@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render } from '@testing-library/react'
-import type { ComponentProps } from 'react'
+import { useLayoutEffect, useRef, type ComponentProps } from 'react'
 import { TabLayout } from '../src/components/TabLayout.tsx'
 import { DockController } from '../src/engine/controller.ts'
 import { getNode, getPane } from '../src/engine/tree.ts'
@@ -12,14 +12,15 @@ import { seededController, TEST_LABELS } from './fixtures.client.ts'
 
 afterEach(() => { cleanup(); vi.restoreAllMocks() })
 
-function mounted(controller = seededController(), options: Partial<ComponentProps<typeof TabLayout>> = {}) {
+function mounted(controller = seededController(), options: Partial<ComponentProps<typeof TabLayout>> = {},
+  renderTab: PaneCallbacks['renderTab'] = tab => <input data-body={tab.id} defaultValue={tab.title} />) {
   const callbacks: PaneCallbacks = {
     onFocusTab: (id) => { controller.focusTab(id); redraw() },
     onFocusPane: (id) => { controller.focusPane(id); redraw() },
     onSplitPane: vi.fn(), onAddTab: vi.fn(), onCloseTab: vi.fn(), onTabPressed: vi.fn(), onDividerPressed: vi.fn(),
     splitBlock: () => undefined, canAddTab: () => true, canCloseTab: () => true,
     dropTarget: undefined, draggingTabId: undefined, labels: TEST_LABELS,
-    renderTab: tab => <input data-body={tab.id} defaultValue={tab.title} />,
+    renderTab,
     renderTabTitle: undefined, renderTabMenuItems: undefined,
     chromePaneId: getPane(controller.getSnapshot().state, controller.getSnapshot().state.rootId).id,
     chrome: undefined,
@@ -127,11 +128,135 @@ it('retains visited bodies and hands keyboard focus to the newly selected strip'
   expect(h.body(second)).toBe(body)
 })
 
+it.for([
+  { retained: false, floating: false },
+  { retained: true, floating: false },
+  { retained: false, floating: true },
+  { retained: true, floating: true },
+])('mounts an unseen requested body without revealing it (retained: $retained, floating: $floating)', ({ retained, floating }, test) => {
+  const controller = seededController()
+  controller.setExpanded(false)
+  const requested = controller.openContent({ kind: 'file', contentId: 'file:a', title: 'A' })
+  controller.openContent({ kind: 'file', contentId: 'file:b', title: 'B' })
+  if (floating) controller.floatTab(requested)
+  const h = mounted(controller, { active: false, keepMounted: () => retained })
+  const snapshot = controller.getSnapshot()
+  expect(h.view.container.querySelector('[data-body]')).toBeNull()
+  const control = document.createElement('button')
+  document.body.append(control)
+  test.onTestFinished(() => { control.remove() })
+  control.focus()
+  h.redraw({ mountRequested: tab => tab.id === requested })
+  const body = h.body(requested)
+  const section = body.closest('[data-dockkit-content]')!
+  expect(h.view.container.querySelectorAll('[data-body]')).toHaveLength(1)
+  expect(section.getAttribute('aria-hidden')).toBe('true')
+  expect(section).toHaveProperty('inert', true)
+  if (!floating) expect(body.closest('[data-dockkit-host]')).toHaveProperty('hidden', true)
+  fireEvent.focus(body)
+  expect(document.activeElement).toBe(control)
+  expect(controller.getSnapshot()).toBe(snapshot)
+  h.redraw({ mountRequested: () => false })
+  expect(body.isConnected).toBe(retained)
+  act(() => { controller.focusTab(requested); controller.setExpanded(true); h.redraw({ active: true }) })
+  const shown = h.body(requested)
+  expect(shown === body).toBe(retained)
+  expect(shown.closest('[data-dockkit-content]')).toHaveProperty('inert', false)
+  if (!floating) expect(h.view.container.querySelectorAll('[data-body]')).toHaveLength(1)
+})
+
+it('makes an initially requested inactive body inert before its child layout effects', () => {
+  const controller = seededController()
+  controller.setExpanded(true)
+  const tabId = controller.openContent({ kind: 'file', contentId: 'file:a', title: 'A' })
+  const observed: (string | null)[] = []
+  function Body() {
+    const input = useRef<HTMLInputElement>(null)
+    useLayoutEffect(() => {
+      observed.push(input.current!.closest('[data-dockkit-content]')!.getAttribute('inert'))
+    }, [])
+    return <input ref={input} data-body={tabId} />
+  }
+  const h = mounted(controller, { active: false, mountRequested: tab => tab.id === tabId }, () => <Body />)
+  const body = h.body(tabId)
+  const section = body.closest('[data-dockkit-content]')!
+  expect(observed).toEqual([''])
+  expect(section.hasAttribute('inert')).toBe(true)
+  expect(section).toHaveProperty('inert', true)
+  h.redraw({ active: true })
+  expect(h.body(tabId)).toBe(body)
+  expect(section.hasAttribute('inert')).toBe(false)
+  expect(section).toHaveProperty('inert', false)
+})
+
+it('preserves a requested body and current focus through same-key release and navigation', () => {
+  const controller = seededController()
+  controller.setExpanded(true)
+  const first = getPane(controller.getSnapshot().state, controller.getSnapshot().state.rootId).tabs[0]!
+  const second = controller.openContent({ kind: 'file', contentId: 'file:b', title: 'B' })
+  controller.focusTab(first)
+  const h = mounted(controller, { keepMounted: () => true, bodyKey: tab => `body:${tab.id}` })
+  const original = h.body(first)
+  original.focus()
+  const snapshot = controller.getSnapshot()
+  h.redraw({ mountRequested: tab => tab.id === second })
+  const requested = h.body(second)
+  fireEvent.change(requested, { target: { value: 'local body state' } })
+  expect(document.activeElement).toBe(original)
+  expect(controller.getSnapshot()).toBe(snapshot)
+  expect(requested.closest('[data-dockkit-host]')).toHaveProperty('hidden', true)
+  expect(requested.closest('[data-dockkit-content]')).toHaveProperty('inert', true)
+  h.redraw({ mountRequested: () => false, bodyKey: tab => `body:${tab.id}` })
+  expect(h.body(second)).toBe(requested)
+  fireEvent.click(h.node(`[data-dockkit-tab="${second}"]`))
+  expect(h.body(second)).toBe(requested)
+  expect(requested).toHaveProperty('value', 'local body state')
+  expect(h.body(first)).toBe(original)
+  fireEvent.click(h.node(`[data-dockkit-content="${second}"] [data-dockkit-tab="${first}"]`))
+  expect(h.body(second)).toBe(requested)
+  expect(h.body(first)).toBe(original)
+})
+
+it.each(['inactive', 'requested', 'visible'] as const)('resets only the body lifetime after a same-batch close and undo: %s', (mode) => {
+  const controller = seededController()
+  controller.setExpanded(true)
+  const tabId = controller.openContent({ kind: 'file', contentId: 'file:a', title: 'A' })
+  let lifetime = 'first'
+  const h = mounted(controller, {
+    active: false, keepMounted: () => true,
+    mountRequested: tab => tab.id === tabId,
+    bodyKey: tab => tab.id === tabId ? lifetime : tab.id,
+  })
+  const original = h.body(tabId)
+  const section = original.closest('[data-dockkit-content]')!
+  const host = original.closest('[data-dockkit-host]')!
+  const record = controller.getSnapshot().state.tabs[tabId]
+  act(() => {
+    controller.closeTab(tabId)
+    expect(controller.undo()).toBe(true)
+    lifetime = 'second'
+    h.redraw({ active: mode === 'visible', mountRequested: tab => mode === 'requested' && tab.id === tabId })
+  })
+  expect(controller.getSnapshot().state.tabs[tabId]).toBe(record)
+  expect(h.node(`[data-dockkit-content="${tabId}"]`)).toBe(section)
+  expect(section.closest('[data-dockkit-host]')).toBe(host)
+  expect(original.isConnected).toBe(false)
+  if (mode === 'inactive') {
+    expect(h.view.container.querySelector(`[data-body="${tabId}"]`)).toBeNull()
+    h.redraw({ mountRequested: tab => tab.id === tabId })
+  }
+  const replacement = h.body(tabId)
+  expect(replacement).not.toBe(original)
+  expect(replacement.closest('[data-dockkit-content]')).toBe(section)
+  h.redraw({ mountRequested: () => false })
+  expect(h.body(tabId)).toBe(replacement)
+})
+
 it('keeps body ancestors through pane moves, floating, raising and docking', () => {
   const controller = seededController()
   controller.setExpanded(true)
   const tab = controller.openContent({ kind: 'file', contentId: 'file:a', title: 'A' })
-  const h = mounted(controller, { keepMounted: () => true })
+  const h = mounted(controller, { keepMounted: () => true, bodyKey: tab => `body:${tab.id}` })
   const body = h.body(tab)
   const host = body.closest('[data-dockkit-host]')!
   act(() => { controller.splitPane(); h.redraw() })

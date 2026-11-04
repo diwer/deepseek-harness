@@ -652,6 +652,129 @@ describe('SidebarRightController — a tab\'s own actions', () => {
     expect(titles()).toContain('a.txt')
   })
 
+  function trackedStore(contentId: string) {
+    const store = createSidebarRightStore(() => ({ kind: 'guide', title: 'seed' })).create()
+    store.actions.openContent(SESSION, { kind: 'text', contentId, title: contentId }, () => {})
+    const subscribe = store.subscribe.bind(store)
+    const unsubscribe = vi.fn()
+    const subscribed = vi.spyOn(store, 'subscribe').mockImplementation((listener) => {
+      const release = subscribe(listener)
+      return () => { unsubscribe(); release() }
+    })
+    return { store, subscribed, unsubscribe }
+  }
+
+  it('keeps the newer adoption installed by a demand observer during replacement withdrawal', () => {
+    const h = harness()
+    h.publish()
+    h.controller.openResource(A_TXT)
+    const a = h.controller.tabDomain.occurrence(SESSION, { id: h.tabOf('a.txt') })
+    const requests = h.controller.tabDomain.bodyMountsOf(SESSION)
+    const releaseDemand = h.controller.tabDomain.requestBodyMount(a, new AbortController().signal)
+    const b = trackedStore(B_TXT)
+    const c = trackedStore('dsh-resource://file/session/s-test/c.txt')
+    const tabC = Object.values(c.store.getSnapshot().bySession[SESSION]!.layout.tabs)[0]!
+    let releaseC: (() => void) | undefined
+    const observe = requests.subscribe(() => {
+      if (requests.getSnapshot().length === 0) releaseC = h.adopt(SESSION, c.store)
+    })
+    const releaseB = h.adopt(SESSION, b.store)
+    try {
+      expect(releaseC).toBeDefined()
+      expect(a.signal.aborted).toBe(true)
+      expect(requests.getSnapshot()).toEqual([])
+      expect(b.subscribed).not.toHaveBeenCalled()
+      expect(c.subscribed).toHaveBeenCalledOnce()
+      const occurrence = h.controller.tabDomain.occurrence(SESSION, tabC)
+      releaseB(); h.unadopt()
+      expect(occurrence.signal.aborted).toBe(false)
+      const current = h.controller.openTabs.getSnapshot()
+      const tabB = Object.values(b.store.getSnapshot().bySession[SESSION]!.layout.tabs)[0]!
+      b.store.actions.duplicateTab(SESSION, tabB.id)
+      h.instance.actions.duplicateTab(SESSION, a.tabId)
+      expect(h.controller.openTabs.getSnapshot()).toBe(current)
+      c.store.actions.duplicateTab(SESSION, tabC.id)
+      const records = Object.values(c.store.getSnapshot().bySession[SESSION]!.layout.tabs)
+      expect(h.controller.tabsIn(SESSION)).toEqual(records)
+      expect(h.controller.openTabs.getSnapshot().map(tab => tab.tabId)).toEqual(records.map(tab => tab.id))
+      for (const record of records) expect(h.controller.tabDomain.occurrence(SESSION, record).signal.aborted).toBe(false)
+      releaseB()
+      expect(occurrence.signal.aborted).toBe(false)
+      releaseC?.(); releaseC?.()
+      expect(c.unsubscribe).toHaveBeenCalledOnce()
+      expect(occurrence.signal.aborted).toBe(true)
+      expect(h.controller.tabsIn(SESSION)).toEqual([])
+      const withdrawn = h.controller.openTabs.getSnapshot()
+      c.store.actions.duplicateTab(SESSION, tabC.id)
+      expect(h.controller.openTabs.getSnapshot()).toBe(withdrawn)
+    } finally {
+      observe(); releaseDemand(); releaseB(); releaseC?.(); h.unadopt()
+    }
+  })
+
+  it('stops old-layout reconciliation when inventory publication installs a replacement', () => {
+    const h = harness()
+    h.publish()
+    h.controller.openResource(A_TXT)
+    const b = trackedStore(B_TXT)
+    const c = trackedStore('dsh-resource://file/session/s-test/c.txt')
+    const tabC = Object.values(c.store.getSnapshot().bySession[SESSION]!.layout.tabs)[0]!
+    b.store.actions.duplicateTab(SESSION, Object.values(b.store.getSnapshot().bySession[SESSION]!.layout.tabs)[0]!.id)
+    const tabB = Object.values(b.store.getSnapshot().bySession[SESSION]!.layout.tabs).find(tab => tab.id !== tabC.id)!
+    let releaseC: (() => void) | undefined
+    const observe = h.controller.openTabs.subscribe(() => {
+      if (h.controller.openTabs.getSnapshot().some(tab => tab.contentId === B_TXT)) releaseC = h.adopt(SESSION, c.store)
+    })
+    const releaseB = h.adopt(SESSION, b.store)
+    try {
+      expect(releaseC).toBeDefined()
+      expect(b.unsubscribe).toHaveBeenCalledOnce()
+      const occurrence = h.controller.tabDomain.occurrence(SESSION, tabC)
+      expect(occurrence.signal.aborted).toBe(false)
+      expect(() => h.controller.tabDomain.occurrence(SESSION, tabB)).toThrow('no committed occurrence')
+      expect(h.controller.tabsIn(SESSION)).toEqual([tabC])
+      const current = h.controller.openTabs.getSnapshot()
+      b.store.actions.duplicateTab(SESSION, tabB.id)
+      releaseB(); h.unadopt()
+      expect(h.controller.openTabs.getSnapshot()).toBe(current)
+      expect(occurrence.signal.aborted).toBe(false)
+      c.store.actions.duplicateTab(SESSION, tabC.id)
+      const records = Object.values(c.store.getSnapshot().bySession[SESSION]!.layout.tabs)
+      expect(h.controller.openTabs.getSnapshot().map(tab => tab.tabId)).toEqual(records.map(tab => tab.id))
+      for (const record of records) expect(h.controller.tabDomain.occurrence(SESSION, record).signal.aborted).toBe(false)
+      releaseC?.(); releaseC?.()
+      expect(c.unsubscribe).toHaveBeenCalledOnce()
+      expect(b.unsubscribe).toHaveBeenCalledOnce()
+      expect(occurrence.signal.aborted).toBe(true)
+    } finally {
+      observe(); releaseB(); releaseC?.(); h.unadopt()
+    }
+  })
+
+  it('withdraws a failed adoption setup and its subscription without restoring the retired Store', () => {
+    const h = harness()
+    h.publish()
+    h.controller.openResource(A_TXT)
+    const old = h.controller.tabDomain.occurrence(SESSION, { id: h.tabOf('a.txt') })
+    const b = trackedStore(B_TXT)
+    const failure = new Error('adoption snapshot failed')
+    const snapshot = vi.spyOn(b.store, 'getSnapshot').mockImplementation(() => { throw failure })
+    try {
+      expect(() => h.adopt(SESSION, b.store)).toThrow(failure)
+      expect(b.unsubscribe).toHaveBeenCalledOnce()
+      expect(old.signal.aborted).toBe(true)
+      expect(h.controller.tabsIn(SESSION)).toEqual([])
+      snapshot.mockRestore()
+      const current = h.controller.openTabs.getSnapshot()
+      b.store.actions.setExpanded(SESSION, true)
+      expect(h.controller.openTabs.getSnapshot()).toBe(current)
+      h.unadopt()
+      expect(b.unsubscribe).toHaveBeenCalledOnce()
+    } finally {
+      snapshot.mockRestore(); h.unadopt()
+    }
+  })
+
   it('adoption syncs the Tab domain on each commit of that store: the seeded guide is pinned, a closed tab aborted', () => {
     const { controller, adopt, instance, pin } = harness()
     const first = adopt(SESSION, instance)
@@ -678,19 +801,22 @@ describe('SidebarRightController — a tab\'s own actions', () => {
     if (again === undefined) throw new Error('expected the second tab')
     const held = controller.tabDomain.occurrence(SESSION, again)
     expect(pin).toHaveBeenCalledWith(B_TXT, held.signal)
-    // Adopting another instance for the session ends the earlier adoption's
-    // subscription with its routing: the old store's commits sync nothing, the
-    // new store's commits reconcile the session against its own layout.
+    // Replacement immediately retires the previous Store's occurrences, even
+    // before the replacement has created a surface. Old commits sync nothing.
     const replacement = createSidebarRightStore(() => ({ kind: 'guide', title: 'seed' })).create()
     const third = adopt(SESSION, replacement)
     const pins = pin.mock.calls.length
     instance.actions.openContent(SESSION, { kind: 'text', contentId: 'dsh-resource://file/session/s-test/c.txt', title: 'c' }, () => {})
     expect(pin.mock.calls.length).toBe(pins)
-    expect(held.signal.aborted).toBe(false)
-    replacement.actions.open(SESSION)
     expect(held.signal.aborted).toBe(true)
-    second()
-    third()
+    replacement.actions.setExpanded(SESSION, true)
+    const restoredGuide = Object.values(replacement.getSnapshot().bySession[SESSION]?.layout.tabs ?? {})[0]
+    if (restoredGuide === undefined) throw new Error('expected replacement guide')
+    const restored = controller.tabDomain.occurrence(SESSION, restoredGuide)
+    second(); second()
+    expect(restored.signal.aborted).toBe(false)
+    third(); third()
+    expect(restored.signal.aborted).toBe(true)
   })
 })
 

@@ -71,11 +71,67 @@ interface Held extends TabOccurrence {
   paneId: PaneId | undefined
   /** Whether the resource model has been asked to hold the address. */
   pinned: boolean
+  /** Independently cancellable demands to initialize this exact body's lifetime. */
+  readonly mountRequests: Set<() => void>
 }
 
 /** Every session's occurrences. */
 export class TabDomain {
   private readonly bySession = new Map<SessionId, Map<TabId, Held>>()
+  private readonly reconciliations = new Map<SessionId, object>()
+  private readonly mountSources = new Map<SessionId, SnapshotStore<readonly SidebarRightOccurrenceId[]>>()
+  private closed = false
+
+  /**
+   * Observe explicit first-body demands through the original Session seat.
+   * @param sessionId - Session whose current occurrence IDs are requested.
+   * @returns a stable source; requests neither select tabs nor authorize browser input.
+   */
+  bodyMountsOf(sessionId: SessionId): SnapshotStore<readonly SidebarRightOccurrenceId[]> {
+    if (this.closed) throw new Error('Sidebar tab domain is disposed')
+    let source = this.mountSources.get(sessionId)
+    if (source === undefined) {
+      source = createSnapshotStore<readonly SidebarRightOccurrenceId[]>([])
+      this.mountSources.set(sessionId, source)
+    }
+    return source
+  }
+
+  /**
+   * Demand initialization of one exact committed occurrence without changing presentation.
+   * @param occurrence - current lifetime, not a guessed TabId or a navigation-only record.
+   * @param signal - this requester's lifetime.
+   * @returns idempotent release, also called on either abort or domain shutdown.
+   * @throws on pre-abort, owner shutdown, or a stale/uncommitted occurrence, including during publication.
+   */
+  requestBodyMount(occurrence: TabOccurrence, signal: AbortSignal): () => void {
+    signal.throwIfAborted()
+    const held = this.bySession.get(occurrence.sessionId)?.get(occurrence.tabId)
+    if (this.closed || held !== occurrence || !held.pinned || held.signal.aborted) {
+      throw new Error('Sidebar body mount requires a live committed occurrence')
+    }
+    const current = (): boolean => !this.closed && !held.signal.aborted
+    this.bodyMountsOf(held.sessionId)
+    let active = true
+    const release = (): void => {
+      if (!active) return
+      active = false
+      signal.removeEventListener('abort', release)
+      held.signal.removeEventListener('abort', release)
+      held.mountRequests.delete(release)
+      this.publishBodyMounts(held.sessionId)
+    }
+    held.mountRequests.add(release)
+    signal.addEventListener('abort', release, { once: true })
+    held.signal.addEventListener('abort', release, { once: true })
+    this.publishBodyMounts(held.sessionId)
+    signal.throwIfAborted()
+    if (!current()) {
+      release()
+      throw new Error('Sidebar body mount occurrence was retired during publication')
+    }
+    return release
+  }
 
   /**
    * @param navigator - where tab actions go, aimed at the tab's session; the navigation controller.
@@ -95,19 +151,33 @@ export class TabDomain {
    * @param layout - that session's layout as committed.
    */
   sync(sessionId: SessionId, layout: LayoutState): void {
+    if (this.closed) return
     const held = this.session(sessionId)
-    for (const [tabId, occurrence] of held) {
-      if (layout.tabs[tabId] !== undefined) continue
-      held.delete(tabId)
-      occurrence.controller.abort()
-    }
-    for (const tab of Object.values(layout.tabs)) {
-      const occurrence = held.get(tab.id) ?? this.hold(sessionId, tab.id, { address: tab.contentId, params: undefined, revision: 0 })
-      const pane = findTabPane(layout, tab.id)
-      occurrence.paneId = pane.host === 'dock' ? pane.id : undefined
-      if (occurrence.pinned) continue
-      occurrence.pinned = true
-      this.pin(occurrence.navigation.getSnapshot().address, occurrence.signal)
+    const reconciliation = {}
+    this.reconciliations.set(sessionId, reconciliation)
+    const current = (): boolean => !this.closed && this.bySession.get(sessionId) === held
+      && this.reconciliations.get(sessionId) === reconciliation
+    try {
+      // Aborts, demand publication and resource pins may synchronously reconcile
+      // a newer layout, withdraw this Store, or dispose the owner. Never resume
+      // the older snapshot after one of those callbacks has superseded it.
+      for (const [tabId, occurrence] of [...held]) {
+        if (!current()) return
+        if (layout.tabs[tabId] !== undefined) continue
+        held.delete(tabId)
+        occurrence.controller.abort()
+      }
+      for (const tab of Object.values(layout.tabs)) {
+        if (!current()) return
+        const occurrence = held.get(tab.id) ?? this.hold(sessionId, tab.id, { address: tab.contentId, params: undefined, revision: 0 })
+        const pane = findTabPane(layout, tab.id)
+        occurrence.paneId = pane.host === 'dock' ? pane.id : undefined
+        if (occurrence.pinned) continue
+        occurrence.pinned = true
+        this.pin(occurrence.navigation.getSnapshot().address, occurrence.signal)
+      }
+    } finally {
+      if (this.reconciliations.get(sessionId) === reconciliation) this.reconciliations.delete(sessionId)
     }
   }
 
@@ -134,6 +204,7 @@ export class TabDomain {
    * @param target - the address and the opener's params.
    */
   navigate(sessionId: SessionId, tabId: TabId, target: { address: string; params: SidebarRightNavigationParams }): void {
+    if (this.closed) return
     const existing = this.session(sessionId).get(tabId)
     if (existing === undefined) {
       this.hold(sessionId, tabId, { ...target, revision: 1 })
@@ -142,12 +213,36 @@ export class TabDomain {
     existing.navigation.set({ ...target, revision: existing.navigation.getSnapshot().revision + 1 })
   }
 
-  /** Abort every occurrence of every session; the package is unloading. */
+  /**
+   * End an adopted Store's occurrences without affecting a replacement adoption.
+   * @param sessionId - Session whose owning adoption has been withdrawn.
+   */
+  forgetSession(sessionId: SessionId): void {
+    this.reconciliations.delete(sessionId)
+    const held = this.bySession.get(sessionId)
+    this.bySession.delete(sessionId)
+    this.publishBodyMounts(sessionId)
+    if (held === undefined) return
+    for (const occurrence of held.values()) occurrence.controller.abort()
+  }
+
+  /** Abort every occurrence and demand; late commits cannot recreate disposed state. */
   dispose(): void {
-    for (const held of this.bySession.values()) {
-      for (const occurrence of held.values()) occurrence.controller.abort()
-    }
-    this.bySession.clear()
+    if (this.closed) return
+    this.closed = true
+    const sessions = [...this.bySession.keys()]
+    for (const sessionId of sessions) this.forgetSession(sessionId)
+    this.mountSources.clear()
+  }
+
+  private publishBodyMounts(sessionId: SessionId): void {
+    const source = this.mountSources.get(sessionId)
+    if (source === undefined) return
+    const ids = [...this.bySession.get(sessionId)?.values() ?? []]
+      .filter(occurrence => occurrence.mountRequests.size > 0)
+      .map(occurrence => occurrence.id).sort()
+    const previous = source.getSnapshot()
+    if (ids.length !== previous.length || ids.some((id, index) => id !== previous[index])) source.set(ids)
   }
 
   private session(sessionId: SessionId): Map<TabId, Held> {
@@ -183,6 +278,7 @@ export class TabDomain {
       navigation: createSnapshotStore(navigation),
       paneId: undefined,
       pinned: false,
+      mountRequests: new Set(),
       tabActions: {
         bindCommands: (commands) => {
           if (controller.signal.aborted) return () => {}
