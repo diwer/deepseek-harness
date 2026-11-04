@@ -21,6 +21,7 @@ function render(view) {
     'stop-failed': messages.updateStopFailed,
     'tasks-changed': messages.updateTasksChanged,
     'tasks-unavailable': messages.updateTasksUnavailable,
+    'fullscreen-timeout': messages.updateFullscreenTimeout,
   }
   const adaptation = update.phase === 'adaptation-required'
   const fallback = adaptation || failed || update.phase === 'unavailable' || update.phase === 'idle' || view.error !== undefined

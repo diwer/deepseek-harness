@@ -23,7 +23,7 @@ describe('desktop build version', () => {
     'rejects malformed ming versions: %s', (version) => {
       expect(customDesktopUpstreamVersion(version)).toBeUndefined()
     })
-  it.each(['0.2.1-rc.2', '0.2.1-alpha.4', '0.2.1', '0.3.0-beta.1'])(
+  it.each(['0.2.1-rc.2', '0.2.1-alpha.4', '0.2.2-alpha.3', '0.2.1', '0.3.0-beta.1'])(
     'names extension revisions independently from official %s', (official) => {
       for (const revision of [1, 2, 100]) {
         const version = `${official}-alpha-${revision}`
