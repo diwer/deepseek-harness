@@ -24,13 +24,15 @@ Sidebar 负责活 Body 的保留，不依赖 Browser 导航和 Workspace 存储�
 
 `SidebarRightTabDefinition.keepMounted` 为类型启用懒保活。Desktop Browser 启用它，其他类型继续按可见性挂载 Body。保活 Body 在首次显示时创建，随后隐藏不卸载，直到 occurrence 或提供方生命周期结束。该策略不持久化，也不选择存储分区。
 
-`SidebarSessionView` 使用独立的 `sidebarView` 来源申请、释放一个 `SessionReference`，并管理自己的已提交挂载计数和 Body 保活持有。`SidebarSessionViews` 管理选中、保留策略和视图索引，将生命周期操作委托给视图，而不修改其计数或释放其引用。`RightbarRoot` 接收 `SidebarSessionViewSnapshot` 和已有注入回调，不接收资源所有者对象；它为各视图分别渲染显式 `SessionProvider`，保持会话 key 稳定，渲染器通用的会话重挂载语义不变。
+`SidebarSessionView` 使用独立的 `sidebarView` 来源申请、释放一个 `SessionReference`，并管理自己的已提交挂载计数、Body 保活持有和独立渲染需求。`SidebarSessionViews` 管理选中、保留策略和视图索引，将生命周期操作委托给视图，而不修改其计数或释放其引用。`RightbarRoot` 接收 `SidebarSessionViewSnapshot` 和已有注入回调，不接收资源所有者对象；它为各视图分别渲染显式 `SessionProvider`，保持会话 key 稳定，渲染器通用的会话重挂载语义不变。
 
 Tab 提供 Body 保活持有，而不独立申请会话引用。View 的稳定 `retainTab` 回调通过 owner props 传给席位，因此替换 Session injection binding 不会释放再重新获取这些持有。这些持有跟随已有 occurrence signal，包括关闭后撤销恢复得到的新 signal；视图不创建第二套 Tab 生命周期。退出视图列表的视图仍留在集合的引用索引中，直到自行释放时移除索引，因此插件关闭时也能清理尚未结束 React 挂载的视图。
 
 只有选中的会话向 frame 报告占位、绑定公共 Sidebar 导航。后台 Tab actions 仍指向自己的已接管存储。`tab.visible` 包含会话和全局面板的可见性，浮动不会让后台会话变成可见。切会话或打开全局面板隐藏整个内容树，收起 Sidebar 则只隐藏停靠 cell，前台浮窗仍可见。隐藏内容不可通过指针或键盘访问，隐藏 Body 内的焦点会被移除。
 
-后台会话没有已初始化的保活 Body 时，从视图列表移除；等已提交的 React 根卸载后再释放引用，避免仍挂载的子树下方先销毁会话 scope。插件释放会清理全部引用，包括等待卸载的已移除视图。Sidebar 插件依赖 `sessions` 和 `uiSession`，任一依赖结束时由 Cordis 卸载它，绑定失效由 `ui-session` 负责。视图不向共享会话 Context 注册销毁回调。仅在目录列表中缺项不视为删除。未访问的 Browser Tab 和无关会话不会提前打开。
+显式、响应取消的 `SidebarSessionViews.hold` 在尚未初始化任何 tab 正文时提供父级 View。它复用同一 reference，不选中 Session、不添加另一棵 UI 根，也不注册公开的任务 API。每个需求先于新 View 的发布建立；额外需求不改变渲染快照。分配或同步发布期间取消，不会返回可用句柄或泄漏 reference。保留计数的观察者可能在 `sessions.retain()` 尚未返回引用时同步重入。按 Session 设置的分配标记会拒绝这种同 Session 重入，而非创建重复所有者或暴露未完成的 View；`finally` 在成功或失败时都移除标记，之后发布期间才能复用完整的 View。插件关闭同时移除需求监听与引用。该渲染需求不授予浏览器权限、不证明 store 已被接管，也不初始化未访问的正文。
+
+后台会话既没有已初始化的保活 Body，也没有独立需求时，从视图列表移除；等已提交的 React 根卸载后再释放引用，避免仍挂载的子树下方先销毁会话 scope。插件释放会清理全部引用，包括等待卸载的已移除视图。Sidebar 插件依赖 `sessions` 和 `uiSession`，任一依赖结束时由 Cordis 卸载它，绑定失效由 `ui-session` 负责。视图不向共享会话 Context 注册销毁回调。仅在目录列表中缺项不视为删除。未访问的 Browser Tab 和无关会话不会提前打开。
 
 ### 提供方职责
 
@@ -79,4 +81,4 @@ Sidebar/DockKit 除了负责保活内容布局, 还负责控件、浮窗层级�
 
 ## Verification
 
-定向测试覆盖 Session 数据源注册与注销期间的正文保活、存档布局校验和既有 Sidebar 呈现。Host 与 Client TypeScript 编译通过。用户已手动验收重新构建后的 Electron 冷启动；未录制 GIF。guest 身份、表单与 history 保留、多浮窗绘制顺序、缩放、裁剪、放置提示、焦点和平台窗口控件仍需独立于这些单元测试的真实 Electron 证据。
+定向测试覆盖 Session 数据源注册与注销期间的正文保活、存档布局校验和既有 Sidebar 呈现。Session 视图测试还覆盖独立需求计数、选中项与快照身份不变、已提交根的退休、分配和发布期间取消、打开失败，以及关闭时移除监听。Host 与 Client TypeScript 编译通过。用户已手动验收重新构建后的 Electron 冷启动；未录制 GIF。guest 身份、表单与 history 保留、多浮窗绘制顺序、缩放、裁剪、放置提示、焦点和平台窗口控件仍需独立于这些单元测试的真实 Electron 证据。

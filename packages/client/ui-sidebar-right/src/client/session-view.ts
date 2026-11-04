@@ -14,6 +14,7 @@ export class SidebarSessionView {
   /** Session reference released exclusively by this View. */
   readonly reference: SessionReference
   private readonly tabs = new Map<TabId, number>()
+  private readonly holds = new Set<() => void>()
   private mounts = 0
   private retired = false
   private disposed = false
@@ -22,13 +23,13 @@ export class SidebarSessionView {
    * @param sessionId - Session displayed by this view.
    * @param sessions - allocator for this view's independent reference.
    * @param onDispose - removes this view from the collection's index before reference release.
-   * @param onTabRelease - reconsiders retention after a body releases its hold.
+   * @param onRetentionRelease - reconsiders retention after a body or independent demand releases its hold.
    */
   constructor(
     readonly sessionId: SessionId,
     sessions: ISessions,
     private readonly onDispose: (view: SidebarSessionView) => void,
-    private readonly onTabRelease: (view: SidebarSessionView) => void,
+    private readonly onRetentionRelease: (view: SidebarSessionView) => void,
   ) {
     this.reference = sessions.retain(sessionId, { source: 'sidebarView' })
     void this.reference.ready.catch((error: unknown) => { console.error('Sidebar Session opening failed:', error) })
@@ -37,6 +38,32 @@ export class SidebarSessionView {
   /** Whether an initialized retained body still needs this view. */
   get hasRetainedTabs(): boolean {
     return this.tabs.size > 0
+  }
+
+  /** Whether an independent background demand still needs this view. */
+  get hasHolds(): boolean {
+    return this.holds.size > 0
+  }
+
+  /**
+   * Retain this view independently of selection and initialized tab bodies.
+   * @param signal - owner's lifetime; abort releases only this demand.
+   * @returns idempotent release; plugin shutdown removes its abort listener too.
+   */
+  hold(signal: AbortSignal): () => void {
+    signal.throwIfAborted()
+    if (this.retired) throw new Error('Sidebar Session view is no longer owned')
+    let held = true
+    const release = (): void => {
+      if (!held) return
+      held = false
+      signal.removeEventListener('abort', release)
+      this.holds.delete(release)
+      this.onRetentionRelease(this)
+    }
+    this.holds.add(release)
+    signal.addEventListener('abort', release, { once: true })
+    return release
   }
 
   /**
@@ -68,7 +95,7 @@ export class SidebarSessionView {
       const count = this.tabs.get(tabId) as number
       if (count === 1) this.tabs.delete(tabId)
       else this.tabs.set(tabId, count - 1)
-      this.onTabRelease(this)
+      this.onRetentionRelease(this)
     }
     signal.addEventListener('abort', release, { once: true })
     return release
@@ -86,6 +113,7 @@ export class SidebarSessionView {
     this.disposed = true
     this.retired = true
     this.onDispose(this)
+    for (const release of this.holds) release()
     this.reference.release()
   }
 }

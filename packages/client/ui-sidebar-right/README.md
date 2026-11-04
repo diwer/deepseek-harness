@@ -60,7 +60,9 @@ While the panel is hidden, one button in the conversation header's corner seat (
 
 The panel takes the conversation's ground colour and content font sizes rather than a raised layer of its own: it is a column of the page, not a card over it.
 
-The root-scoped `rightbar` entry renders the selected Session and background Sessions with initialized `keepMounted` bodies through separate `rightbar.session` subtrees. Each View owns its Session reference. Only the foreground subtree reports a frame track; other subtrees stay hidden without deleting tab state.
+The root-scoped `rightbar` entry renders the selected Session, background Sessions with initialized `keepMounted` bodies, and explicitly held background Views through separate `rightbar.session` subtrees. Each View owns its Session reference. Only the foreground subtree reports a frame track; other subtrees stay hidden without deleting tab state.
+
+The internal view owner accepts independent, abort-aware rendering demands without changing selection. Demands for one Session share its existing View and reference; extra demands do not republish an unchanged render snapshot. Each caller releases its own demand, including after an opening failure. Abort and plugin shutdown also release it. When selection, retained bodies and independent demands all end, the View leaves the render list before retiring; its reference remains until the last committed root unmounts. Synchronous same-Session reentry while `sessions.retain()` has not returned is rejected rather than allocating another View or exposing a partial reference; a later call may retry. Reference readiness alone does not establish store adoption or tab-body readiness.
 
 <a id="state"></a>
 ## State
@@ -151,7 +153,8 @@ None; this package neither assembles nor sends a provider request.
 - **Browser-local layout.** Layout does not synchronize between devices; provider-specific state requires its provider's recovery support.
 - **No surface without a session.** State is keyed by session id, so the hero screen shows nothing on the right.
 - **Hard-coded stacking.** The content tree uses a fixed stacking layer; floats reorder within it without raising that layer above menus.
-- **Retained Session deletion.** Catalog absence alone does not retire an initialized retained View; its tab lifetimes and plugin teardown own release.
+- **Retained Session deletion.** Catalog absence alone does not retire a retained View; its tab lifetimes, independent demands and plugin teardown own release.
+- **Background task opening.** Internal view demand does not provide a public task entry, await store adoption, initialize an unvisited tab body or authorize browser automation.
 - **Undo is not exposed.** The recorded sequence is stepped only through the `@internal` service methods; product controls are deliberately absent.
 - **Titles are fixed at open time.** A type's `title(address)` is captured into the record; a live title comes only from the optional title seat.
 - **No content navigation stack.** Stepping back replays layout operations; an editor-style back/forward over visited content is not built.
