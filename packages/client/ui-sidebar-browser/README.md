@@ -70,6 +70,8 @@ Each tab's `BrowserController` owns address validation, commands and explicit re
 
 Desktop's main process approves guest leases and enforces attachment, navigation and permission policy. Preload exposes only scoped Browser operations. Shared declarations use the standard `/types` export with `import type`; the Host and Client compile through separate tsconfig files. Desktop Browser tabs declare `keepMounted`, so Sidebar preserves their DOM across tab changes, Session switches, collapse and floating.
 
+On a bridge advertising `nativeAttachment` version 1, initial navigation waits for both renderer `dom-ready` and Main's confirmation of the exact one-shot lease, installed input routing, and inert bootstrap document. Main binds the physical guest before that document is ready, so early release can destroy it. The attachment wait is lease-owned and expires after 30 seconds; release, crash, or owner retirement rejects it. Physical removal cancels the Client wait immediately; disposal awaits lease release. Late answers cannot activate a replacement guest. Legacy manual bridges retain renderer-only readiness. Attachment confirmation grants neither Agent authorization nor control ownership; see the [native attachment decision](../../../.agents/notes/implemented/feature/2026-09-20-desktop-browser-webview.md#native-attachment-readiness).
+
 The page refresh shortcut calls the same reload operation as the toolbar. Its tooltip and ARIA key combination follow the effective binding. Desktop routes accepted shortcuts from an approved guest through its owning window; the focused webview must still carry that guest’s lease. Web leaves browser-reserved combinations unchanged.
 
 </details>
@@ -115,6 +117,6 @@ The isolation policy deliberately gives up some browser compatibility:
 <details>
 <summary>Working context for maintainers — click to expand</summary>
 
-None.
+After `pnpm run build:artifacts`, run `pnpm run test:desktop:browser` from the repository root to qualify storage and exact native attachment against the current production artifacts. The fixtures use private Electron profiles and owned loopback pages; they do not launch the installed app or establish task authorization, full input handling or original-tree integration.
 
 </details>

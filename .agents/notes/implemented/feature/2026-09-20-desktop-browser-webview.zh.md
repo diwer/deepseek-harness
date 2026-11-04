@@ -42,6 +42,14 @@ guest Session 不注册应用协议，也不继承应用的认证请求转发。
 
 Desktop toolbar 没有关闭 sandbox 的开关。实现不增加远程调试端口或 browser-use 集成。未来的自动化提供方需要经过认证、限定 target 的 broker，而不是访问全部应用 target。把 target/生命周期句柄与导航命令分开的方式，与 Playwright 的 Android WebView 和 Page 对象区分相同；设备级输入属于另一项职责。
 
+### Native attachment readiness
+
+Desktop bridge 的可选 `nativeAttachment` 第 1 版能力，等待 Main 将精确的 owner、租约和 guest 关联、安装原生输入，并验证该 guest 的第一个无活动内容的 `about:blank#lease` 文档。每个未完成租约共享一个有 30 秒上限的等待；过期或其他 owner 的租约会被拒绝。renderer `dom-ready`、成功呈现或页面元数据都不构成 Main 证明。`ElectronWebViewImpl` 只有同时获得原生能力答复与当前 renderer 的 `dom-ready`，才加载待处理地址；不带此能力的旧手工 bridge 保持仅等待 renderer 的行为。
+
+Main 在 `will-attach-webview` 强制设置带租约标记的 bootstrap User-Agent，并在第一个文档就绪前的 `did-attach-webview` 通过 `guest.getUserAgent()` 恢复精确标记。它交叉检查实际 Electron Session 与预留 partition 一致，随后立即恢复该 Session 的默认 User-Agent，再调用原生输入安装回调或发布就绪。标记只属于无活动内容的 bootstrap，不属于后续网站请求。升级 Electron 后，原生资格测试必须重新验证精确恢复与默认值还原：Electron 44 的 `getLastWebPreferences()` 不暴露 `additionalArguments` 或 `partition`，而初始 URL 和 frame name 在此早期事件也无法标识 guest。共享 partition 的归属或预留顺序绝不能代替精确租约标识。
+
+释放、超时、guest 崩溃与 owner 导航会撤销未完成的就绪等待。退役流程在清理回调前预留按 owner 限定的共享等待，因此并发或重入的释放会等待同一次原生输入清理和真实 guest 销毁。若释放重入输入安装流程，清理会等待安装返回的 disposer；清理错误仅在 guest 销毁后拒绝共享结果。从活动租约表删除不表示销毁完成。物理移除时 Client 立即取消本地等待，销毁时等待所持有的释放操作；迟到的原生答复不能激活另一物理 guest。这些就绪机制不授予任务控制权，也不增加自动化入口。
+
 ## Alternatives considered
 
 **在按可见性挂载的 tab body 内渲染 guest。** 卸载会断开 guest；直接挂载需要 Sidebar 提供 Body 保活与稳定祖先机制。
@@ -56,6 +64,6 @@ Desktop toolbar 没有关闭 sandbox 的开关。实现不增加远程调试端�
 
 Sidebar 持有的稳定祖先保留页面，无需 Browser 自行处理几何或遮挡。隐藏 guest 保留页面内存，也可能继续联网；当前没有空闲回收策略。持久化存储、可选择的隔离级别与权限授权 UI 留作独立工作。临时 Workspace partition 是当前策略，并不意味着 Workspace 隔离必然要求临时存储。
 
-定向测试覆盖原生导航错误恢复、preload 监听范围和已迁移的 iframe 行为。这些测试不能确认真实 Electron 的挂载时序、遮挡、焦点、平台样式或存储隔离；这些仍是运行时验证缺口。本次变更不附带 GUI 录像。此实现不构成完整浏览器安全策略已经可以发布的证据。
+定向测试覆盖导航恢复、preload 监听范围和已迁移的 iframe 行为。独立的 Electron 44.7.0 fixture 验证当前编译产物中的生产 guest manager 挂载流程：同分区反序挂载的精确身份、无活动文档与输入安装边界、默认 User-Agent 还原、跨 owner 拒绝与等待真实销毁的共享释放。另一 fixture 验证 Cookie、localStorage 隔离和重启行为。这些 fixture 不挂载原始 Loader 树，也不确认遮挡、前后台焦点、平台样式或完整任务授权；这些仍是集成验证缺口。本次变更不附带 GUI 录像。此结果不构成完整浏览器安全策略已经可以发布的证据。
 
 包内的 Electron 提供方、呈现适配器、页面工厂与 Workspace 存储解析集中在 `src/client/electron/`. 在原生 Electron 测试环境覆盖 guest 行为之前, 该目录暂时不参与逐文件覆盖率门禁; 其单元测试仍然运行. 共享 Browser 控制器、恢复 UI、iframe 代码和 Sidebar 保活仍遵循现有覆盖率要求.

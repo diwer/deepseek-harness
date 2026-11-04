@@ -132,12 +132,16 @@ export class ElectronWebViewImpl implements BrowserFrame {
     const attachment = this.attachment
     if (attachment === undefined || this.initializing !== undefined || this.element !== undefined || this.lifetime.signal.aborted) return
     const signal = AbortSignal.any([this.lifetime.signal, attachment.signal])
+    let failure: { readonly error: unknown; readonly revision: number } | undefined
     this.initializing = this.createGuest(signal).catch(async (error: unknown) => {
+      failure = { error, revision: this.revision }
       await this.dropGuest()
-      if (!signal.aborted) this.commandFailed(error)
     }).finally(() => {
+      // Cleanup is complete before publishing failure: a subscriber may synchronously retry.
       this.initializing = undefined
-      if (this.attachment !== attachment && this.pending !== undefined) this.initialize()
+      if (failure !== undefined && !signal.aborted && failure.revision === this.revision) this.commandFailed(failure.error)
+      // Explicit demand during cleanup must survive, but an unchanged failed target never loops.
+      if (this.pending !== undefined && (this.attachment !== attachment || this.store.getSnapshot().error === undefined)) this.initialize()
     })
   }
 
@@ -156,10 +160,22 @@ export class ElectronWebViewImpl implements BrowserFrame {
       if (this.element === element && !signal.aborted) this.options.openRequested(url)
     })
     signal.addEventListener('abort', unsubscribeOpen, { once: true })
-    element.addEventListener('dom-ready', () => {
+    const nativeAttachment = this.bridge.nativeAttachment?.protocolVersion === 1
+      ? this.bridge.nativeAttachment : undefined
+    const rendererReady = Promise.withResolvers<void>()
+    const current = (): boolean => !signal.aborted && this.element === element && this.lease === reservation.lease
+    const activate = (): void => {
+      if (!current()) return
       this.ready = true
       this.observe(this.store.getSnapshot().address !== 'requested')
-      this.loadPending()
+      // Observation publishes state and may synchronously detach or dispose this frame.
+      if (current()) this.loadPending()
+    }
+    element.addEventListener('dom-ready', () => {
+      rendererReady.resolve()
+      // Legacy manual bridges have no Main proof. Once confirmed, later document events
+      // keep observing the same physical guest without creating another attachment wait.
+      if (nativeAttachment === undefined || this.ready) activate()
     }, { signal })
     element.addEventListener('did-navigate', () => { this.observe(true) }, { signal })
     element.addEventListener('did-navigate-in-page', (event) => {
@@ -184,7 +200,26 @@ export class ElectronWebViewImpl implements BrowserFrame {
     for (const name of ['render-process-gone', 'destroyed']) {
       element.addEventListener(name, () => { void this.dropGuest(); this.failed() }, { signal })
     }
-    this.presentation.present(element)
+    if (nativeAttachment === undefined) {
+      this.presentation.present(element)
+      return
+    }
+    const cancelled = Promise.withResolvers<void>()
+    const abort = (): void => { cancelled.resolve() }
+    signal.addEventListener('abort', abort, { once: true })
+    try {
+      if (signal.aborted) return
+      this.presentation.present(element)
+      // Physical presentation may reenter removal. Never start a wait on a released lease.
+      if (!current()) return
+      const confirmed = Promise.all([nativeAttachment.wait(reservation.lease), rendererReady.promise])
+        .then(() => { activate() })
+      // Releasing the lease owns Main cancellation. Locally stop waiting immediately, even
+      // if a late IPC answer arrives after detach; Promise.race also consumes late rejection.
+      await Promise.race([confirmed, cancelled.promise])
+    } finally {
+      signal.removeEventListener('abort', abort)
+    }
   }
 
   private loadPending(): void {

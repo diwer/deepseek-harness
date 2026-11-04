@@ -8,10 +8,11 @@ import { ElectronWebviewPresentation } from '../src/client/electron/ElectronWebv
 let sequence = 0
 
 /** @returns one isolated, explicitly mounted page with native operations replaced by spies. */
-export function electronFixture(initial?: BrowserTabState) {
+export function electronFixture(initial?: BrowserTabState, nativeAttachment?: DesktopBrowserBridge['nativeAttachment']) {
   const opens = new Set<(url: string) => void>()
   const reservation: DesktopBrowserReservation = { lease: `lease-${++sequence}` as DesktopBrowserLeaseId, partition: 'partition' }
   const bridge = {
+    ...nativeAttachment === undefined ? {} : { nativeAttachment },
     acquire: vi.fn(async (_workspace: string) => reservation),
     release: vi.fn(async (_lease: DesktopBrowserLeaseId) => {}),
     onOpenRequested: vi.fn((_lease: DesktopBrowserLeaseId, listener: (url: string) => void) => {

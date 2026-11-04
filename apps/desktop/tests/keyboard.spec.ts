@@ -13,7 +13,7 @@ import { installNativeKeyboard } from '@deepseek-ai/dsh-client-shortcuts/src/cli
 import type { DesktopBrowserLeaseId, DesktopBrowserReservation } from '@deepseek-ai/dsh-client-ui-sidebar-browser/types'
 import { DESKTOP_IPC } from '../src/ipc.ts'
 
-const ipc = vi.hoisted(() => ({ handle: vi.fn(), removeHandler: vi.fn() }))
+const ipc = vi.hoisted(() => ({ handle: vi.fn(), removeHandler: vi.fn(), on: vi.fn(), invoke: vi.fn() }))
 const overlays = await vi.hoisted(async () => {
   const { EventEmitter } = await import('node:events')
   class Window extends EventEmitter {
@@ -32,14 +32,27 @@ const overlays = await vi.hoisted(async () => {
   }
   return { Window }
 })
-vi.mock('electron', () => ({ ipcMain: ipc, BrowserWindow: overlays.Window, WebContentsView: overlays.Window, app: { isPackaged: true }, session: { fromPartition: () => ({
-  setPermissionRequestHandler: vi.fn(), setPermissionCheckHandler: vi.fn(), setDevicePermissionHandler: vi.fn(),
-  setDisplayMediaRequestHandler: vi.fn(), on: vi.fn(), webRequest: { onBeforeRequest: vi.fn() },
-}) } }))
+const browserSessions = vi.hoisted(() => {
+  const create = () => ({
+    getUserAgent: () => 'Desktop fixture default user agent',
+    setPermissionRequestHandler: vi.fn(), setPermissionCheckHandler: vi.fn(), setDevicePermissionHandler: vi.fn(),
+    setDisplayMediaRequestHandler: vi.fn(), on: vi.fn(), webRequest: { onBeforeRequest: vi.fn() },
+  })
+  const partitions = new Map<string, ReturnType<typeof create>>()
+  return { clear: () => { partitions.clear() }, fromPartition(partition: string) {
+    let value = partitions.get(partition)
+    if (value === undefined) { value = create(); partitions.set(partition, value) }
+    return value
+  } }
+})
+vi.mock('electron', () => ({ ipcMain: ipc, ipcRenderer: ipc, BrowserWindow: overlays.Window, WebContentsView: overlays.Window,
+  app: { isPackaged: true }, session: browserSessions }))
+const { session: electronSession } = await import('electron')
 const { installDesktopShortcuts } = await import('../src/keyboard.ts')
 const { DesktopBrowserGuests } = await import('../src/browser-guests.ts')
+const { createDesktopBrowserBridge } = await import('../src/preload-browser.ts')
 const { DesktopUpdateOverlays } = await import('../src/update-overlay.ts')
-afterEach(() => { vi.clearAllMocks() })
+afterEach(() => { vi.clearAllMocks(); browserSessions.clear() })
 
 type FrameFixture = { url: WebFrameMain['url']; name: WebFrameMain['name']; parent: FrameFixture | null }
 type ContentsFixture = EventEmitter & Pick<WebContents,
@@ -64,6 +77,7 @@ const installFixture = installDesktopShortcuts as (
 type GuestsFixture = {
   acquire(owner: ContentsFixture, workspace: unknown): DesktopBrowserReservation
   release(owner: ContentsFixture, id: unknown): Promise<void>
+  waitForAttachment(owner: ContentsFixture, id: unknown): Promise<void>
   bind(window: WindowFixture, attachInput: (guest: ContentsFixture, name: DesktopBrowserLeaseId) => () => void): void
 }
 
@@ -73,12 +87,30 @@ function desktopDefaults(binding: ShortcutBinding): ShortcutDefinition['defaults
 
 function browserGuest(reservation: DesktopBrowserReservation) {
   const frame: FrameFixture = { url: `about:blank#${reservation.lease}`, name: '', parent: null }
+  const preferences: Electron.WebPreferences = {}
+  const parameters: Record<string, string> = { src: frame.url, partition: reservation.partition }
+  let destroyed = false
+  let restoredUserAgent: string | undefined
   const guest = Object.assign(new EventEmitter(), { mainFrame: frame, focusedFrame: frame,
-    getURL: () => frame.url, isDestroyed: () => false, isFocused: vi.fn(() => true),
-    setWindowOpenHandler: vi.fn(), setIgnoreMenuShortcuts: vi.fn(), send: vi.fn(), close: vi.fn(),
-    focus: vi.fn(), sendInputEvent: vi.fn() })
+    session: electronSession.fromPartition(reservation.partition),
+    getURL: () => frame.url,
+    getLastWebPreferences: (): Electron.WebPreferences => {
+      const saved: Electron.WebPreferences = {}
+      for (const key of ['nodeIntegration', 'nodeIntegrationInWorker', 'nodeIntegrationInSubFrames', 'contextIsolation',
+        'sandbox', 'webSecurity', 'webviewTag', 'allowRunningInsecureContent', 'disableDialogs'] as const) {
+        const value = preferences[key]
+        if (value !== undefined) saved[key] = value
+      }
+      return saved
+    },
+    getUserAgent: () => restoredUserAgent ?? parameters.useragent ?? 'Unclaimed guest default user agent',
+    setUserAgent: vi.fn((value: string) => { restoredUserAgent = value }),
+    isDestroyed: () => destroyed, isFocused: vi.fn(() => true),
+    setWindowOpenHandler: vi.fn<WebContents['setWindowOpenHandler']>(),
+    setIgnoreMenuShortcuts: vi.fn(), send: vi.fn(), close: vi.fn(), focus: vi.fn(), sendInputEvent: vi.fn() })
+  guest.once('destroyed', () => { destroyed = true })
   onTestFinished(() => { guest.emit('destroyed') })
-  return { frame, guest }
+  return { frame, guest, preferences, parameters }
 }
 
 async function fixture(platform: 'macos' | 'windows' | 'linux' = 'macos') {
@@ -205,10 +237,10 @@ it.each([false, true])('blocks approved browser guest input across update overla
   const guests = new DesktopBrowserGuests(() => undefined) as GuestsFixture
   guests.bind(f.window, (guest, name) => f.keyboard.attachGuest(f.window, guest, name))
   const reservation = guests.acquire(f.contents, 'session:test')
-  const { frame, guest } = browserGuest(reservation)
+  const { guest, preferences, parameters } = browserGuest(reservation)
   const attach = () => {
     const event = { preventDefault: vi.fn() }
-    f.contents.emit('will-attach-webview', event, {}, { src: frame.url, partition: reservation.partition })
+    f.contents.emit('will-attach-webview', event, preferences, parameters)
     expect(event.preventDefault).not.toHaveBeenCalled()
     f.contents.emit('did-attach-webview', {}, guest)
     guest.emit('dom-ready')
@@ -719,18 +751,19 @@ it.each(['macos', 'windows', 'linux'] as const)('routes approved %s browser gues
   const attach = vi.fn((guest: ContentsFixture, name: DesktopBrowserLeaseId) => f.keyboard.attachGuest(f.window, guest, name))
   guests.bind(f.window, attach)
   const reservation = guests.acquire(f.contents, 'session:test')
-  const { frame, guest } = browserGuest(reservation)
+  const { guest, preferences, parameters } = browserGuest(reservation)
   const rejected = { preventDefault: vi.fn() }
   f.contents.emit('will-attach-webview', rejected, {}, { src: 'about:blank#unknown', partition: reservation.partition })
   expect(rejected.preventDefault).toHaveBeenCalledOnce()
-  const invalid = Object.assign(new EventEmitter(), { getURL: () => 'about:blank#unknown', setWindowOpenHandler: vi.fn(), close: vi.fn() })
+  const invalid = Object.assign(new EventEmitter(), { getURL: () => 'about:blank#unknown', getUserAgent: () => 'Unclaimed guest default user agent',
+    setWindowOpenHandler: vi.fn(), close: vi.fn() })
   f.contents.emit('did-attach-webview', {}, invalid)
   invalid.emit('dom-ready')
   expect(invalid.close).toHaveBeenCalledExactlyOnceWith({ waitForBeforeUnload: false })
   expect(attach).not.toHaveBeenCalled()
 
   const approved = { preventDefault: vi.fn() }
-  f.contents.emit('will-attach-webview', approved, {}, { src: frame.url, partition: reservation.partition })
+  f.contents.emit('will-attach-webview', approved, preferences, parameters)
   expect(approved.preventDefault).not.toHaveBeenCalled()
   f.contents.emit('did-attach-webview', {}, guest)
   guest.emit('dom-ready')
@@ -757,6 +790,395 @@ it.each(['macos', 'windows', 'linux'] as const)('routes approved %s browser gues
   expect(f.contents.send).toHaveBeenCalledOnce()
   guest.emit('destroyed')
   await release
+})
+
+async function nativeAttachmentFixture(attachInput?: (guest: ContentsFixture, name: DesktopBrowserLeaseId) => () => void) {
+  const f = await fixture()
+  const guests = new DesktopBrowserGuests(() => undefined) as GuestsFixture
+  const attach = vi.fn(attachInput ?? ((guest: ContentsFixture, name: DesktopBrowserLeaseId) =>
+    f.keyboard.attachGuest(f.window, guest, name)))
+  guests.bind(f.window, attach)
+  onTestFinished(() => { f.contents.emit('destroyed') })
+  const reservation = guests.acquire(f.contents, 'attachment:test')
+  const physical = browserGuest(reservation)
+  const claim = () => {
+    const event = { preventDefault: vi.fn() }
+    f.contents.emit('will-attach-webview', event, physical.preferences, physical.parameters)
+    expect(event.preventDefault).not.toHaveBeenCalled()
+  }
+  const attachPhysical = () => { f.contents.emit('did-attach-webview', {}, physical.guest) }
+  return { ...f, ...physical, guests, reservation, claim, attachPhysical, attach }
+}
+
+it('exposes native attachment through preload and waits for Main bootstrap plus installed keyboard input', async () => {
+  vi.useFakeTimers()
+  onTestFinished(() => { vi.useRealTimers(); ipc.invoke.mockReset() })
+  const f = await nativeAttachmentFixture()
+  ipc.invoke.mockImplementation(async (channel: string, value: unknown) => {
+    if (channel === DESKTOP_IPC.browserAcquire) return f.guests.acquire(f.contents, value)
+    if (channel === DESKTOP_IPC.browserWaitForAttachment) return f.guests.waitForAttachment(f.contents, value)
+    if (channel === DESKTOP_IPC.browserRelease) return f.guests.release(f.contents, value)
+    throw new Error(`unexpected browser channel: ${channel}`)
+  })
+  const bridge = createDesktopBrowserBridge()
+  expect(bridge.nativeAttachment?.protocolVersion).toBe(1)
+  const acquired = await bridge.acquire('attachment:test')
+  expect(acquired.partition).toBe(f.reservation.partition)
+  await bridge.release(acquired.lease)
+  let ready = false
+  const wait = bridge.nativeAttachment!.wait(f.reservation.lease).then(() => { ready = true })
+  expect(vi.getTimerCount()).toBe(1)
+  f.claim()
+  await Promise.resolve()
+  expect(ready).toBe(false)
+  f.frame.url = ''
+  f.attachPhysical()
+  expect(f.attach).toHaveBeenCalledExactlyOnceWith(f.guest, f.reservation.lease)
+  expect(f.guest.listenerCount('before-input-event')).toBe(1)
+  await Promise.resolve()
+  expect(ready).toBe(false)
+  f.frame.url = `about:blank#${f.reservation.lease}`
+  f.guest.emit('dom-ready')
+  await wait
+  expect(ready).toBe(true)
+  expect(vi.getTimerCount()).toBe(0)
+  await bridge.nativeAttachment!.wait(f.reservation.lease)
+  const release = bridge.release(f.reservation.lease)
+  const stale = expect(bridge.nativeAttachment!.wait(f.reservation.lease)).rejects.toThrow('no longer active')
+  expect(f.guest.listenerCount('before-input-event')).toBe(0)
+  f.guest.emit('destroyed')
+  await release
+  await stale
+})
+
+it.each(['release', 'navigation', 'owner-crash', 'owner-destroyed', 'guest-crash', 'guest-destroyed'] as const)(
+  'retires pending native attachment synchronously on %s and ignores late bootstrap events', async (ending) => {
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
+    const f = await nativeAttachmentFixture()
+    const waiting = expect(f.guests.waitForAttachment(f.contents, f.reservation.lease))
+      .rejects.toThrow(/released|destroyed|renderer exited/)
+    f.claim()
+    f.frame.url = ''
+    f.attachPhysical()
+    expect(f.guest.listenerCount('before-input-event')).toBe(1)
+    let release: Promise<void> | undefined
+    if (ending === 'release') release = f.guests.release(f.contents, f.reservation.lease)
+    else if (ending === 'navigation') f.contents.emit('did-start-navigation', {}, 'dsh-app://app/', false, true)
+    else if (ending === 'owner-crash') f.contents.emit('render-process-gone')
+    else if (ending === 'owner-destroyed') f.contents.emit('destroyed')
+    else if (ending === 'guest-crash') f.guest.emit('render-process-gone')
+    else f.guest.emit('destroyed')
+    expect(f.guest.listenerCount('before-input-event')).toBe(0)
+    expect(vi.getTimerCount()).toBe(0)
+    expect(f.guest.close).toHaveBeenCalledTimes(ending === 'guest-destroyed' ? 0 : 1)
+    const stale = expect(f.guests.waitForAttachment(f.contents, f.reservation.lease)).rejects.toThrow('no longer active')
+    f.frame.url = `about:blank#${f.reservation.lease}`
+    f.guest.emit('dom-ready')
+    f.guest.emit('destroyed')
+    await waiting
+    await stale
+    await release
+    expect(f.attach).toHaveBeenCalledOnce()
+  })
+
+it('rejects release before any guest exists and closes a later physical guest without installing input', async () => {
+  const f = await nativeAttachmentFixture()
+  const waiting = expect(f.guests.waitForAttachment(f.contents, f.reservation.lease)).rejects.toThrow('released')
+  f.claim()
+  await f.guests.release(f.contents, f.reservation.lease)
+  await waiting
+  f.attachPhysical()
+  expect(f.guest.close).toHaveBeenCalledOnce()
+  f.guest.emit('dom-ready')
+  expect(f.attach).not.toHaveBeenCalled()
+})
+
+it.each([false, true])('owns one 30-second attachment deadline per lease, with physical guest present: %s', async (attached) => {
+  vi.useFakeTimers()
+  onTestFinished(() => { vi.useRealTimers() })
+  const f = await nativeAttachmentFixture()
+  const first = expect(f.guests.waitForAttachment(f.contents, f.reservation.lease)).rejects.toThrow('timed out')
+  const second = expect(f.guests.waitForAttachment(f.contents, f.reservation.lease)).rejects.toThrow('timed out')
+  if (attached) { f.claim(); f.attachPhysical() }
+  expect(vi.getTimerCount()).toBe(1)
+  await vi.advanceTimersByTimeAsync(29_999)
+  expect(f.guest.close).not.toHaveBeenCalled()
+  await vi.advanceTimersByTimeAsync(1)
+  await first
+  await second
+  expect(vi.getTimerCount()).toBe(0)
+  expect(f.guest.close).toHaveBeenCalledTimes(attached ? 1 : 0)
+  expect(f.guest.listenerCount('before-input-event')).toBe(0)
+  await expect(f.guests.waitForAttachment(f.contents, f.reservation.lease)).rejects.toThrow('no longer active')
+  f.guest.emit('dom-ready')
+  f.guest.emit('destroyed')
+})
+
+it('uses Main-forced identity rather than partition or attachment order for concurrent reservations', async () => {
+  const f = await nativeAttachmentFixture()
+  const second = f.guests.acquire(f.contents, 'attachment:test')
+  const physical = browserGuest(second)
+  expect(second.partition).toBe(f.reservation.partition)
+  f.claim()
+  const preferences = physical.preferences
+  Object.assign(preferences, { preload: '/untrusted', nodeIntegration: true, additionalArguments: ['forged'] })
+  physical.parameters.useragent = 'Forged bootstrap user agent'
+  f.contents.emit('will-attach-webview', { preventDefault: vi.fn() }, preferences, physical.parameters)
+  expect(preferences).toMatchObject({ nodeIntegration: false, nodeIntegrationInWorker: false, nodeIntegrationInSubFrames: false,
+    contextIsolation: true, sandbox: true, webSecurity: true, webviewTag: false, plugins: false, devTools: false })
+  expect(preferences.preload).toBeUndefined()
+  expect(preferences.additionalArguments).toBeUndefined()
+  expect(physical.parameters.useragent).toBe(`DSH-BrowserBootstrap/${second.lease}`)
+  expect(physical.guest.getLastWebPreferences().additionalArguments).toBeUndefined()
+  expect(physical.guest.getLastWebPreferences().partition).toBeUndefined()
+  const waiting = f.guests.waitForAttachment(f.contents, f.reservation.lease)
+  const secondWaiting = f.guests.waitForAttachment(f.contents, second.lease)
+  physical.frame.url = ''
+  f.contents.emit('did-attach-webview', {}, physical.guest)
+  f.frame.url = ''
+  f.attachPhysical()
+  expect(f.attach.mock.calls.map(([, lease]) => lease)).toEqual([second.lease, f.reservation.lease])
+  f.frame.url = `about:blank#${f.reservation.lease}`
+  f.guest.emit('dom-ready')
+  await waiting
+  const release = f.guests.release(f.contents, f.reservation.lease)
+  expect(physical.guest.close).not.toHaveBeenCalled()
+  f.guest.emit('destroyed')
+  await release
+  physical.frame.url = `about:blank#${second.lease}`
+  physical.guest.emit('dom-ready')
+  await secondWaiting
+})
+
+it('rejects foreign wait/release and duplicate claims without retiring the exact approved guest', async () => {
+  const f = await nativeAttachmentFixture()
+  const foreign = await fixture()
+  f.guests.bind(foreign.window, () => { throw new Error('foreign input must not attach') })
+  const waiting = f.guests.waitForAttachment(f.contents, f.reservation.lease)
+  await expect(f.guests.waitForAttachment(foreign.contents, f.reservation.lease)).rejects.toThrow('another window')
+  await expect(f.guests.release(foreign.contents, f.reservation.lease)).rejects.toThrow('another window')
+  await expect(f.guests.waitForAttachment(f.contents, null)).rejects.toThrow('invalid guest lease')
+  f.claim()
+  const duplicate = { preventDefault: vi.fn() }
+  f.contents.emit('will-attach-webview', duplicate, {}, { src: f.frame.url, partition: f.reservation.partition })
+  expect(duplicate.preventDefault).toHaveBeenCalledOnce()
+  const foreignPhysical = browserGuest(f.reservation)
+  foreignPhysical.parameters.useragent = `DSH-BrowserBootstrap/${f.reservation.lease}`
+  foreign.contents.emit('did-attach-webview', {}, foreignPhysical.guest)
+  expect(foreignPhysical.guest.close).toHaveBeenCalledOnce()
+  f.attachPhysical()
+  const duplicatePhysical = browserGuest(f.reservation)
+  duplicatePhysical.parameters.useragent = `DSH-BrowserBootstrap/${f.reservation.lease}`
+  f.contents.emit('did-attach-webview', {}, duplicatePhysical.guest)
+  expect(duplicatePhysical.guest.close).toHaveBeenCalledOnce()
+  expect(f.guest.close).not.toHaveBeenCalled()
+  f.guest.emit('dom-ready')
+  await waiting
+  expect(f.attach).toHaveBeenCalledOnce()
+})
+
+it('rejects a marked guest in the wrong native session without retiring its approved lease', async () => {
+  const f = await nativeAttachmentFixture()
+  f.claim()
+  const wrong = browserGuest({ ...f.reservation, partition: 'unapproved-session' })
+  wrong.parameters.useragent = `DSH-BrowserBootstrap/${f.reservation.lease}`
+  f.contents.emit('did-attach-webview', {}, wrong.guest)
+  expect(wrong.guest.close).toHaveBeenCalledExactlyOnceWith({ waitForBeforeUnload: false })
+  expect(f.attach).not.toHaveBeenCalled()
+  f.attachPhysical()
+  f.guest.emit('dom-ready')
+  await f.guests.waitForAttachment(f.contents, f.reservation.lease)
+  expect(f.attach).toHaveBeenCalledExactlyOnceWith(f.guest, f.reservation.lease)
+})
+
+it('quarantines a validated guest before bootstrap and rejects a non-inert first document', async () => {
+  const f = await nativeAttachmentFixture()
+  const waiting = expect(f.guests.waitForAttachment(f.contents, f.reservation.lease)).rejects.toThrow('invalid guest bootstrap')
+  f.claim()
+  f.attachPhysical()
+  const popup = f.guest.setWindowOpenHandler.mock.calls[0]![0]
+  expect(popup({ url: 'https://example.com/', frameName: '', features: '', disposition: 'new-window',
+    referrer: { url: '', policy: 'no-referrer' } })).toEqual({ action: 'deny' })
+  expect(f.contents.send).not.toHaveBeenCalled()
+  for (const eventName of ['will-frame-navigate', 'will-attach-webview']) {
+    const event = { isMainFrame: true, url: 'https://example.com/', preventDefault: vi.fn() }
+    f.guest.emit(eventName, event)
+    expect(event.preventDefault).toHaveBeenCalledOnce()
+  }
+  f.frame.url = 'https://example.com/'
+  f.guest.emit('dom-ready')
+  await waiting
+  expect(f.guest.close).toHaveBeenCalledOnce()
+  expect(f.guest.listenerCount('before-input-event')).toBe(0)
+  f.frame.url = `about:blank#${f.reservation.lease}`
+  f.guest.emit('dom-ready')
+  await expect(f.guests.waitForAttachment(f.contents, f.reservation.lease)).rejects.toThrow('no longer active')
+})
+
+it.each(['input setup', 'user agent restoration'] as const)('retires the exact guest when %s fails', async (failure) => {
+  const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+  onTestFinished(() => { log.mockRestore() })
+  const f = await nativeAttachmentFixture(() => { throw new Error('input setup') })
+  if (failure === 'user agent restoration') f.guest.setUserAgent.mockImplementationOnce(() => { throw new Error(failure) })
+  const waiting = expect(f.guests.waitForAttachment(f.contents, f.reservation.lease)).rejects.toThrow('native attachment setup failed')
+  f.claim()
+  f.attachPhysical()
+  await waiting
+  expect(f.guest.close).toHaveBeenCalledOnce()
+  expect(f.attach).toHaveBeenCalledTimes(failure === 'input setup' ? 1 : 0)
+  expect(log).toHaveBeenCalledWith('Desktop browser native attachment failed', expect.objectContaining({ message: failure }))
+  f.guest.emit('dom-ready')
+  await expect(f.guests.waitForAttachment(f.contents, f.reservation.lease)).rejects.toThrow('no longer active')
+})
+
+it('restores the session user agent before native input setup and readiness publication', async () => {
+  let verify = () => {}
+  const dispose = vi.fn()
+  const f = await nativeAttachmentFixture(() => { verify(); return dispose })
+  verify = () => {
+    expect(f.guest.getUserAgent()).toBe(f.guest.session.getUserAgent())
+    expect(f.guest.setUserAgent).toHaveBeenCalledExactlyOnceWith(f.guest.session.getUserAgent())
+  }
+  f.claim()
+  expect(f.guest.getUserAgent()).toBe(`DSH-BrowserBootstrap/${f.reservation.lease}`)
+  const ready = f.guests.waitForAttachment(f.contents, f.reservation.lease)
+  f.frame.url = ''
+  f.attachPhysical()
+  f.frame.url = `about:blank#${f.reservation.lease}`
+  f.guest.emit('dom-ready')
+  await ready
+  verify()
+})
+
+it.each(['release', 'destroy', 'dom-ready'] as const)('handles %s reentry during native input setup without premature publication', async (reentry) => {
+  const dispose = vi.fn()
+  let reenter = () => {}
+  const f = await nativeAttachmentFixture(() => { reenter(); return dispose })
+  let releasing: Promise<void> | undefined
+  reenter = () => {
+    if (reentry === 'release') releasing = f.guests.release(f.contents, f.reservation.lease)
+    else if (reentry === 'destroy') f.guest.emit('destroyed')
+    else {
+      f.guest.emit('dom-ready')
+      expect(dispose).not.toHaveBeenCalled()
+    }
+  }
+  const wait = f.guests.waitForAttachment(f.contents, f.reservation.lease)
+  const settled = reentry === 'dom-ready' ? expect(wait).resolves.toBeUndefined() : expect(wait).rejects.toThrow(/released|destroyed/)
+  f.claim()
+  f.attachPhysical()
+  await settled
+  expect(f.attach).toHaveBeenCalledOnce()
+  if (reentry === 'dom-ready') await f.guests.waitForAttachment(f.contents, f.reservation.lease)
+  else {
+    expect(dispose).toHaveBeenCalledOnce()
+    await expect(f.guests.waitForAttachment(f.contents, f.reservation.lease)).rejects.toThrow('no longer active')
+  }
+  f.guest.emit('destroyed')
+  await releasing
+  expect(dispose).toHaveBeenCalledOnce()
+})
+
+it('joins late input cleanup failure when input setup reenters release before returning its disposer', async () => {
+  const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+  onTestFinished(() => { log.mockRestore() })
+  const cleanupError = new Error('late input cleanup')
+  const dispose = vi.fn(() => { throw cleanupError })
+  let reenter = () => {}
+  const f = await nativeAttachmentFixture(() => { reenter(); return dispose })
+  const releases: Promise<void>[] = []
+  reenter = () => {
+    releases.push(f.guests.release(f.contents, f.reservation.lease), f.guests.release(f.contents, f.reservation.lease))
+  }
+  const waiting = expect(f.guests.waitForAttachment(f.contents, f.reservation.lease)).rejects.toThrow('released')
+  f.claim()
+  f.attachPhysical()
+  let settled = 0
+  const outcomes = releases.map(release => release.then(() => { settled++; return undefined },
+    (error: unknown) => { settled++; return error }))
+  await waiting
+  expect(dispose).toHaveBeenCalledOnce()
+  expect(f.guest.close).toHaveBeenCalledOnce()
+  expect(settled).toBe(0)
+  f.guest.emit('destroyed')
+  expect(await Promise.all(outcomes)).toEqual([cleanupError, cleanupError])
+  expect(settled).toBe(2)
+  await f.guests.release(f.contents, f.reservation.lease)
+  expect(dispose).toHaveBeenCalledOnce()
+  expect(f.guest.close).toHaveBeenCalledOnce()
+})
+
+it('invalidates readiness before input cleanup reenters and destroys the guest even if cleanup throws', async () => {
+  let cleanup = () => {}
+  const dispose = vi.fn(() => { cleanup(); throw new Error('input cleanup') })
+  const f = await nativeAttachmentFixture(() => dispose)
+  f.claim()
+  f.attachPhysical()
+  f.guest.emit('dom-ready')
+  await f.guests.waitForAttachment(f.contents, f.reservation.lease)
+  let reentered: Promise<void> | undefined
+  cleanup = () => { reentered = f.guests.waitForAttachment(f.contents, f.reservation.lease) }
+  const release = f.guests.release(f.contents, f.reservation.lease)
+  const stale = expect(reentered).rejects.toThrow('no longer active')
+  const failed = expect(release).rejects.toThrow('input cleanup')
+  const joined = expect(f.guests.release(f.contents, f.reservation.lease)).rejects.toThrow('input cleanup')
+  expect(f.guest.close).toHaveBeenCalledOnce()
+  f.guest.emit('destroyed')
+  await failed
+  await joined
+  await stale
+  await f.guests.release(f.contents, f.reservation.lease)
+  expect(dispose).toHaveBeenCalledOnce()
+})
+
+it('joins concurrent and cleanup-reentrant releases until exact physical destruction', async () => {
+  let cleanup = () => {}
+  const dispose = vi.fn(() => { cleanup() })
+  const f = await nativeAttachmentFixture(() => dispose)
+  f.claim()
+  f.attachPhysical()
+  let reentrant: Promise<void> | undefined
+  cleanup = () => { reentrant = f.guests.release(f.contents, f.reservation.lease) }
+  let firstDone = false
+  let secondDone = false
+  let reentrantDone = false
+  const first = f.guests.release(f.contents, f.reservation.lease).then(() => { firstDone = true })
+  const second = f.guests.release(f.contents, f.reservation.lease).then(() => { secondDone = true })
+  const nested = reentrant!.then(() => { reentrantDone = true })
+  await Promise.resolve()
+  await Promise.resolve()
+  expect([firstDone, secondDone, reentrantDone]).toEqual([false, false, false])
+  expect(f.guest.close).toHaveBeenCalledOnce()
+  expect(dispose).toHaveBeenCalledOnce()
+  await expect(f.guests.waitForAttachment(f.contents, f.reservation.lease)).rejects.toThrow('no longer active')
+  const foreign = await fixture()
+  await expect(f.guests.release(foreign.contents, f.reservation.lease)).rejects.toThrow('another window')
+  f.guest.emit('destroyed')
+  await Promise.all([first, second, nested])
+  expect([firstDone, secondDone, reentrantDone]).toEqual([true, true, true])
+  await f.guests.release(foreign.contents, f.reservation.lease)
+})
+
+it('joins native-timeout retirement when the caller subsequently releases', async () => {
+  vi.useFakeTimers()
+  onTestFinished(() => { vi.useRealTimers() })
+  const f = await nativeAttachmentFixture()
+  const timedOut = expect(f.guests.waitForAttachment(f.contents, f.reservation.lease)).rejects.toThrow('timed out')
+  f.claim()
+  f.attachPhysical()
+  await vi.advanceTimersByTimeAsync(30_000)
+  await timedOut
+  let released = false
+  const release = f.guests.release(f.contents, f.reservation.lease).then(() => { released = true })
+  await Promise.resolve()
+  await Promise.resolve()
+  expect(released).toBe(false)
+  expect(f.guest.close).toHaveBeenCalledOnce()
+  f.guest.emit('destroyed')
+  await release
+  expect(released).toBe(true)
+  expect(vi.getTimerCount()).toBe(0)
 })
 
 it('keeps browser guest chord state local and leaves accepted bindings active through guest navigation', async () => {

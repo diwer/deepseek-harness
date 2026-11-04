@@ -17,9 +17,12 @@
 /agent-note-retained-desktop-browser-webviews/decision/initial-guest-policy:
   en: 21ab346f9a98863c
   zh: efa115f530d22de3
+/agent-note-retained-desktop-browser-webviews/decision/native-attachment-readiness:
+  en: b14e4780fb37e7bc
+  zh: 72742ce87daf7a36
 /agent-note-retained-desktop-browser-webviews/alternatives-considered:
   en: 884daa089df32dcc
   zh: 7e16d740897555c9
 /agent-note-retained-desktop-browser-webviews/consequences:
-  en: 01d4a2e6f638d5e9
-  zh: 9804b00edea2b03c
+  en: da709a051ed8696d
+  zh: 002d81af4aaaca9a
