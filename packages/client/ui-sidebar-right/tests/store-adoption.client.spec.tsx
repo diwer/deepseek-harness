@@ -10,6 +10,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { apply, inject } from '../src/client/index.ts'
 import { createSidebarRightStore } from '../src/client/stores.ts'
 import { SidebarStoreAdoptions } from '../src/client/store-adoptions.ts'
+import { SidebarSessionViews } from '../src/client/session-views.ts'
 
 const SESSION = 's-adoption' as SessionId
 const OTHER = 's-other' as SessionId
@@ -70,6 +71,82 @@ async function mountSidebar() {
   }
   return { runtime, feature, controller, view, store, select, open, binding: () => reference.binding }
 }
+
+async function preparationSidebar() {
+  const adopted = vi.spyOn(SidebarStoreAdoptions.prototype, 'adopt')
+  const selected = vi.spyOn(SidebarSessionViews.prototype, 'select')
+  const h = await mountSidebar()
+  const adoptions = adopted.mock.contexts[0]
+  const views = selected.mock.contexts[0]
+  if (!(adoptions instanceof SidebarStoreAdoptions)) throw new Error('expected original Store-adoption owner')
+  if (!(views instanceof SidebarSessionViews)) throw new Error('expected original Session-view owner')
+  const reference = h.runtime.sessions.retainFor(h.runtime.ctx, OTHER, { source: 'testOperation' })
+  await reference.ready
+  return { ...h, adopted, adoptions, views, reference }
+}
+
+describe('actual renderer Store readiness', () => {
+  it('waits beyond reference readiness until the original never-selected Session root adopts its Store', async () => {
+    const h = await preparationSidebar()
+    const lifetime = new AbortController()
+    const selected = h.controller.mounted.getSnapshot()
+    const input = document.createElement('input')
+    h.view.container.append(input)
+    input.focus()
+    const pending = h.adoptions.wait(h.reference.binding, lifetime.signal)
+    const delivered = vi.fn()
+    void pending.then(delivered, () => {})
+    await h.runtime.flush()
+    expect(delivered).not.toHaveBeenCalled()
+    expect(h.adopted.mock.calls.some(([binding]) => binding === h.reference.binding)).toBe(false)
+    expect(h.view.container.querySelector(`[data-sidebar-right-session="${OTHER}"]`)).toBeNull()
+    let hold: ReturnType<SidebarSessionViews['hold']> | undefined
+    act(() => { hold = h.views.hold(OTHER, lifetime.signal) })
+    const lease = await pending
+    lease.assertCurrent()
+    expect(lease.binding).toBe(h.reference.binding)
+    expect(lease.store).toBe(h.adopted.mock.calls.find(([binding]) => binding === h.reference.binding)?.[1])
+    expect(delivered).toHaveBeenCalledOnce()
+    expect(h.controller.mounted.getSnapshot()).toBe(selected)
+    expect(document.activeElement).toBe(input)
+    expect(h.view.container.querySelector<HTMLElement>(`[data-sidebar-right-session="${OTHER}"]`)?.hidden).toBe(true)
+    act(() => { hold?.release(); h.reference.release() })
+    await h.runtime.flush()
+    expect(lease.signal.aborted).toBe(true)
+    expect(() => { lease.assertCurrent() }).toThrow()
+  })
+
+  it('does not let a cancelled waiter obstruct later actual renderer adoption', async () => {
+    const h = await preparationSidebar()
+    const cancelled = new AbortController()
+    const reason = new Error('preparation cancelled before rendering')
+    const rejected = expect(h.adoptions.wait(h.reference.binding, cancelled.signal)).rejects.toBe(reason)
+    cancelled.abort(reason)
+    await rejected
+    let hold: ReturnType<SidebarSessionViews['hold']> | undefined
+    const lifetime = new AbortController()
+    const pending = h.adoptions.wait(h.reference.binding, lifetime.signal)
+    act(() => { hold = h.views.hold(OTHER, lifetime.signal) })
+    const lease = await pending
+    expect(lease.binding).toBe(h.reference.binding)
+    lease.assertCurrent()
+    act(() => { hold?.release(); h.reference.release() })
+    await h.runtime.flush()
+    expect(lease.signal.aborted).toBe(true)
+  })
+
+  it('rejects pending background readiness and revokes a delivered foreground lease on feature unload', async () => {
+    const h = await preparationSidebar()
+    const lifetime = new AbortController()
+    const foreground = await h.adoptions.wait(h.binding(), lifetime.signal)
+    const rejected = expect(h.adoptions.wait(h.reference.binding, lifetime.signal)).rejects.toThrow('Store adoption owner is disposed')
+    await h.feature.dispose()
+    await rejected
+    expect(foreground.signal.aborted).toBe(true)
+    expect(() => { foreground.assertCurrent() }).toThrow('Store adoption owner is disposed')
+    expect(h.reference.binding.ctx.fiber.getEffects().filter(effect => effect.label === 'ui-sidebar-right: Store adoption wait')).toHaveLength(0)
+  })
+})
 
 describe('sidebar Store adoption ownership', () => {
   it('withdraws a released generation before any replacement Store is created', async () => {

@@ -20,6 +20,7 @@ import { ShortcutRegistry } from '@deepseek-ai/dsh-client-shortcuts/src/client/r
 import type { SidebarRightTabInfo, SidebarRightTabMenuOwnerProps } from '../src/client/contract/slots.ts'
 import type { createSidebarRightStore } from '../src/client/stores.ts'
 import { SidebarSessionViews } from '../src/client/session-views.ts'
+import { SidebarStoreAdoptions } from '../src/client/store-adoptions.ts'
 
 declare module '../src/client/contract/params.ts' {
   interface SidebarRightResourceParamsMap {
@@ -331,6 +332,7 @@ describe('explicit background first-body demand through the original seat', () =
   it('prepares a never-selected Session and preserves its body through release and later preview', async () => {
     // Observe the existing private owner without adding a public preparation API.
     const views = vi.spyOn(SidebarSessionViews.prototype, 'select')
+    const adoptions = vi.spyOn(SidebarStoreAdoptions.prototype, 'adopt')
     const h = await mountSeat(1440, true, 0, false, true)
     const controller = h.controller
     const foreground = h.open('foreground.txt')
@@ -342,17 +344,26 @@ describe('explicit background first-body demand through the original seat', () =
     input.focus()
     await act(async () => { await h.runtime.sessions.add({ id: OTHER }) })
     const owner = views.mock.contexts[0]
+    const adoptionOwner = adoptions.mock.contexts[0]
     if (!(owner instanceof SidebarSessionViews)) throw new Error('expected original Session-view owner')
+    if (!(adoptionOwner instanceof SidebarStoreAdoptions)) throw new Error('expected original Store-adoption owner')
     const preparation = new AbortController()
     let hold: ReturnType<SidebarSessionViews['hold']> | undefined
+    let storeReady: ReturnType<SidebarStoreAdoptions['wait']> | undefined
     await act(async () => {
       hold = owner.hold(OTHER, preparation.signal)
+      storeReady = adoptionOwner.wait(hold.reference.binding, preparation.signal)
       await hold.reference.ready
     })
+    if (storeReady === undefined) throw new Error('expected actual Store-adoption wait')
+    const adopted = await storeReady
+    adopted.assertCurrent()
+    expect(adopted.binding).toBe(hold?.reference.binding)
     const address = `dsh-resource://file/session/${OTHER}/background.txt`
     act(() => { controller.openResourceIn(OTHER, address) })
-    // Opening succeeds only after the real original renderer has adopted B's Store;
-    // do not use storeOf(), which can resolve a Store itself and mask missing adoption.
+    adopted.assertCurrent()
+    // Only the real original renderer publishes this adoption; storeOf() would
+    // create a Store itself and hide a broken preparation path.
     const tab = controller.tabsIn(OTHER).find(record => record.contentId === address)
     if (tab === undefined) throw new Error('expected actual background Store adoption')
     const background = element(h.view.container, `[data-sidebar-right-session="${OTHER}"]`)
@@ -360,6 +371,7 @@ describe('explicit background first-body demand through the original seat', () =
     const occurrence = controller.tabDomain.occurrence(OTHER, tab)
     let release = () => {}
     act(() => { release = controller.tabDomain.requestBodyMount(occurrence, preparation.signal) })
+    adopted.assertCurrent()
     const body = element(background, `[data-tab-body="${tab.id}"]`)
     const host = body.closest<HTMLElement>('[data-dockkit-host]')!
     const parent = body.parentElement
