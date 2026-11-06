@@ -100,6 +100,7 @@ function piAiNamespace(
 
 function scriptedFace(options: {
   providers?: Record<string, JsonValue>
+  catalog?: readonly string[]
   /** User layer, when it differs from the effective section. */
   userProviders?: Record<string, JsonValue>
   /** Composition layer, for a route a `cordis.yml` pins rather than the page. */
@@ -123,9 +124,9 @@ function scriptedFace(options: {
         Object.keys(providers).map(provider => ({ id: provider, name: provider })),
       ))),
       listConfigurableProviders: vi.fn(() => Promise.resolve(ok(
-        Object.keys(providers).map(provider => ({
+        (options.catalog ?? Object.keys(providers)).map(provider => ({
           provider,
-          displayName: provider,
+          displayName: provider === 'commandcode' ? 'CommandCode' : provider,
           settingsNs: 'llm-pi-ai',
           settingsPath: ['providers', provider],
           declared: options.declaredRoutes?.includes(provider) ?? false,
@@ -222,6 +223,18 @@ async function mountSection(options: Parameters<typeof scriptedFace>[0] = {}) {
   render(<ModelsSection {...injected} />)
   return { ...scripted, controller }
 }
+
+it('offers unconfigured CommandCode in the built-in provider dropdown without writing settings', async () => {
+  const { mutate, set } = await mountSection({ providers: {}, catalog: ['openai', 'commandcode'] })
+  fireEvent.click(screen.getByRole('button', { name: en.add }))
+  const select = screen.getByLabelText(en.provider) as HTMLSelectElement
+  expect(within(select).getByRole('option', { name: 'CommandCode' })).toBeTruthy()
+  fireEvent.change(select, { target: { value: 'commandcode' } })
+  expect(select.value).toBe('commandcode')
+  expect(screen.getByLabelText(en.keyInput)).toBeTruthy()
+  expect(mutate).not.toHaveBeenCalled()
+  expect(set).not.toHaveBeenCalled()
+})
 
 /** Open the editor of one configured row and expand its customized fold. */
 function openEditor(provider: string): void {

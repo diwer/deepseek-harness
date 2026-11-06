@@ -497,7 +497,7 @@ export function resolveProfiles(
     // The route key, not the installed provider's own name: the directory has
     // always shown route keys, and a catalog route must not silently rename
     // itself on every configuration surface just because it gained a profile.
-    const displayName = source.displayName ?? provider
+    const displayName = source.displayName ?? (provider === 'commandcode' ? 'CommandCode' : provider)
     let catalog: RouteCatalog | undefined
     let piProvider: Provider | undefined
     let catalogError: string | undefined

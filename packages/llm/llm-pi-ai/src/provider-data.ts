@@ -2,6 +2,7 @@
 
 import type { Provider } from '@earendil-works/pi-ai'
 import type { LlmConfigurableProvider } from '@deepseek-ai/dsh-llm'
+import { COMMANDCODE_KEY_ENV } from './commandcode.ts'
 import { PROVIDER_DATA } from './provider-data.generated.ts'
 
 /**
@@ -10,6 +11,7 @@ import { PROVIDER_DATA } from './provider-data.generated.ts'
  * @returns Known metadata, or only a fixed public endpoint for an unrecorded provider.
  */
 export function providerDefaultsOf(provider: Provider): Pick<LlmConfigurableProvider, 'nativeAuth' | 'defaultBaseURL' | 'baseURLEnv'> {
+  if (provider.id === 'commandcode') return { nativeAuth: { env: [...COMMANDCODE_KEY_ENV], oauth: false } }
   const data = PROVIDER_DATA[provider.id]
   // A consumer can install a newer pi-ai within the dependency range. An
   // unrecorded provider remains configurable without guessed auth metadata.

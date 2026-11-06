@@ -33,6 +33,8 @@ kind: "package-reference"
 
 当同一组合服务多个提供方、某条路由需要 pi-ai 目录默认值并修正少数字段、或必须通过自有端点与协议到达手工声明网关时，选择本适配器。当部署不需要其他提供方时，选择 `dsh-llm-deepseek` 直连 DeepSeek 路由。两个适配器可以同时挂载，因为它们的路由名不冲突；注册其他适配器已拥有的路由会导致插件加载失败。
 
+CommandCode 会在尚未配置路由时出现在内置提供商下拉列表。选择后保存 API Key 即可；内置目录将 Claude 分流到 Anthropic Messages、GPT 分流到 Responses，其他聊天模型使用 Chat Completions。原生认证也接受 `CMD_API_KEY` 或 `COMMAND_CODE_API_KEY`。目录来自公开 API 快照，采用保守的输出上限和模型系列能力默认值，与[官方集成](https://github.com/CommandCodeAI/pi-commandcode-provider)一致；不报告价格，也不检查订阅权限。维护者通过 `pnpm exec tsx packages/llm/llm-pi-ai/scripts/gen-commandcode-data.ts` 刷新目录。
+
 ### 配置提供方路由
 
 每个 profile 都可以设置 `retryPolicy`；省略时使用 normal mode、最多重试五次。`apiKeyEnv` 是按请求经 harness 凭据 seam 解析的凭据引用，因此配置文件绝不包含密钥；解析为空的引用会让请求以 `MISSING_CREDENTIAL` 失败。省略它会让路由保持已配置但无密钥（configured-but-keyless）状态，对已安装目录路由而言即交由 pi-ai 提供方原生的环境发现。

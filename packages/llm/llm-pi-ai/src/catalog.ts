@@ -12,6 +12,7 @@
  * @module dsh-llm-pi-ai/catalog
  */
 
+import { commandCodeModels, commandCodeProvider } from './commandcode.ts'
 import { builtinProviders, getAllBuiltinModels, getBuiltinModels } from '@earendil-works/pi-ai/providers/all'
 import type { BuiltinProvider } from '@earendil-works/pi-ai/providers/all'
 import type {
@@ -185,7 +186,7 @@ function servesChat(provider: Provider): boolean {
  * @returns the catalog provider index, in catalog order.
  */
 function catalogProviders(): Map<string, Provider> {
-  providerIndex ??= new Map(builtinProviders().filter(servesChat).map(provider => [provider.id, provider]))
+  providerIndex ??= new Map([...builtinProviders().filter(servesChat), commandCodeProvider()].map(provider => [provider.id, provider]))
   return providerIndex
 }
 
@@ -215,6 +216,7 @@ export function catalogProviderIds(): readonly string[] {
  * @returns catalog models by id; empty for a route {@link catalogProvider} does not return.
  */
 export function catalogModels(provider: string): Map<string, Model<Api>> {
+  if (provider === 'commandcode') return new Map(commandCodeModels().map(model => [model.id, model]))
   if (!catalogProviders().has(provider)) return new Map()
   const models = getBuiltinModels(provider as BuiltinProvider) as Model<Api>[]
   return new Map(models.map(model => [model.id, model]))

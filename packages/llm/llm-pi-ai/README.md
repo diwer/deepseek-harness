@@ -33,6 +33,8 @@ The adapter accepts the LLM service's [request-only user inputs](../llm/README.m
 
 Choose this adapter when the same composition serves several providers, when a route needs pi-ai's catalog defaults with a few fields corrected, or when a hand-declared gateway must be reached through its own endpoint and protocol. Choose `dsh-llm-deepseek` for the direct DeepSeek route when the deployment needs no other provider. Both adapters can be mounted together because their route names do not collide; registering a route another adapter already owns fails plugin loading.
 
+CommandCode appears in the built-in provider picker before any route is configured. Select it and save an API key; its bundled catalog routes Claude through Anthropic Messages, GPT through Responses, and other chat models through Chat Completions. Native authentication also accepts `CMD_API_KEY` or `COMMAND_CODE_API_KEY`. The catalog is a public API snapshot with conservative output limits and family capability defaults, following the [official integration](https://github.com/CommandCodeAI/pi-commandcode-provider); it does not report prices or enforce subscription entitlements. Maintainers refresh it with `pnpm exec tsx packages/llm/llm-pi-ai/scripts/gen-commandcode-data.ts`.
+
 ### Configure provider routes
 
 Each profile may set a `retryPolicy`; omission uses normal mode with five retries. `apiKeyEnv` is a credential reference resolved per request through the harness credential seam, so no secret enters the configuration file; a reference that resolves to nothing fails the request with `MISSING_CREDENTIAL`. Omitting it leaves the route configured-but-keyless, which for an installed catalog route defers to pi-ai's provider-native ambient discovery.
