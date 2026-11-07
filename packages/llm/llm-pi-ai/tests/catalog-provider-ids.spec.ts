@@ -20,7 +20,7 @@ import { catalogModels, catalogProvider, catalogProviderIds } from '../src/catal
 
 describe('catalog provider ids', () => {
   it('drops a provider that lists only non-chat models and keeps one that lists none', () => {
-    expect(catalogProviderIds()).toEqual(['chat-provider', 'uncataloged-provider'])
+    expect(catalogProviderIds()).toEqual(['chat-provider', 'uncataloged-provider', 'commandcode'])
   })
 
   it('answers no catalog provider or models for the provider it drops', () => {

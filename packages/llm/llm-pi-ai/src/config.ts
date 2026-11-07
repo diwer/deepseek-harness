@@ -25,6 +25,7 @@ import { deepEqualJson } from '@deepseek-ai/dsh-util-values'
 import {
   CACHE_CONTROL_FORMATS,
   CHAT_TEMPLATE_VARS,
+  catalogProviderDisplayName,
   MAX_TOKENS_FIELDS,
   MODALITIES,
   PiAiCatalogError,
@@ -42,6 +43,8 @@ import type {
   RouteCatalog,
 } from './catalog.ts'
 import { buildProvider, supportedProtocols } from './provider.ts'
+import { DEFAULT_MAX_TOKENS } from './model-defaults.ts'
+export { DEFAULT_MAX_TOKENS } from './model-defaults.ts'
 
 /** Default maximum idle interval while an adapter stream read is outstanding. */
 export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000
@@ -76,9 +79,6 @@ export const DEFAULT_REQUEST_IMAGE_MAX_BYTES = 1024 * 1024
 
 /** Context capacity assumed for a model neither configuration nor the catalog sizes. */
 export const DEFAULT_CONTEXT_WINDOW = 1_000_000
-
-/** Output capability assumed for a model neither configuration nor the catalog sizes. */
-export const DEFAULT_MAX_TOKENS = 128_000
 
 /**
  * Modalities assumed for a model neither configuration nor the catalog
@@ -494,10 +494,8 @@ export function resolveProfiles(
     if (defaultInput.length === 0) {
       throw new Error(`llm-pi-ai: provider "${provider}" defaultInput must name at least one modality`)
     }
-    // The route key, not the installed provider's own name: the directory has
-    // always shown route keys, and a catalog route must not silently rename
-    // itself on every configuration surface just because it gained a profile.
-    const displayName = source.displayName ?? provider
+    // Keep the directory label when adopting a dormant provider into settings.
+    const displayName = source.displayName ?? catalogProviderDisplayName(provider)
     let catalog: RouteCatalog | undefined
     let piProvider: Provider | undefined
     let catalogError: string | undefined
