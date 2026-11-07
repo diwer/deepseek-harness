@@ -28,7 +28,7 @@ on:
         default: false
     secrets:
       DEEPSEEK_API_KEY_EXTERNAL:
-        description: Real DeepSeek API key for trusted installed-wheel pull-request tests.
+        description: Real API key for opt-in installed-wheel tests (DSH_REAL_API_TESTS_ENABLED=1).
         required: false
   workflow_dispatch:
     inputs:
@@ -400,9 +400,10 @@ jobs:
         if: >-
           inputs.ci
           && runner.os != 'Windows'
+          && vars.DSH_REAL_API_TESTS_ENABLED == '1'
           && (github.event_name != 'pull_request'
-              || !(github.event.pull_request.head.repo.fork
-                   || github.event.pull_request.user.login == 'dependabot[bot]'))
+              || (github.event.pull_request.head.repo.full_name == github.repository
+                  && github.event.pull_request.user.login != 'dependabot[bot]'))
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY_EXTERNAL }}
         run: |
@@ -416,9 +417,10 @@ jobs:
         if: >-
           inputs.ci
           && runner.os == 'Windows'
+          && vars.DSH_REAL_API_TESTS_ENABLED == '1'
           && (github.event_name != 'pull_request'
-              || !(github.event.pull_request.head.repo.fork
-                   || github.event.pull_request.user.login == 'dependabot[bot]'))
+              || (github.event.pull_request.head.repo.full_name == github.repository
+                  && github.event.pull_request.user.login != 'dependabot[bot]'))
         shell: pwsh
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY_EXTERNAL }}
@@ -431,9 +433,10 @@ jobs:
         if: >-
           inputs.ci
           && runner.os != 'Windows'
+          && vars.DSH_REAL_API_TESTS_ENABLED == '1'
           && (github.event_name != 'pull_request'
-              || !(github.event.pull_request.head.repo.fork
-                   || github.event.pull_request.user.login == 'dependabot[bot]'))
+              || (github.event.pull_request.head.repo.full_name == github.repository
+                  && github.event.pull_request.user.login != 'dependabot[bot]'))
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY_EXTERNAL }}
           DEEPSEEK_BASE_URL: https://api.deepseek.com/anthropic
@@ -451,9 +454,10 @@ jobs:
         if: >-
           inputs.ci
           && runner.os == 'Windows'
+          && vars.DSH_REAL_API_TESTS_ENABLED == '1'
           && (github.event_name != 'pull_request'
-              || !(github.event.pull_request.head.repo.fork
-                   || github.event.pull_request.user.login == 'dependabot[bot]'))
+              || (github.event.pull_request.head.repo.full_name == github.repository
+                  && github.event.pull_request.user.login != 'dependabot[bot]'))
         shell: pwsh
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY_EXTERNAL }}

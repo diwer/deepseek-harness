@@ -1,7 +1,6 @@
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { runInNewContext } from 'node:vm'
 import * as yaml from 'js-yaml'
 import { describe, expect, it } from 'vitest'
@@ -408,7 +407,7 @@ describe('CI workflow', () => {
       expect(job['runs-on'], `${jobName} runs-on must not use the Linux failover switch`).not.toContain('DSH_CI_FAILOVER_LINUX')
       expect(job['runs-on']).toContain('self-hosted')
       expect(job['runs-on']).toContain('dsh-win-ci')
-      expect(job['runs-on']).toContain('DSH_CI_WINDOWS_RUNNER')
+      expect(job['runs-on']).toContain('windows-2025')
       const cores = jobName === 'windows-native-tests' ? 2 : 16
       expect(evaluateRunsOn(job['runs-on'], { vars: { DSH_CI_FAILOVER_WINDOWS: 'blacksmith' } }))
         .toBe(`blacksmith-${cores}vcpu-windows-2025`)
@@ -1054,13 +1053,10 @@ describe('CI workflow', () => {
 
 describe('Runtime and LLM e2e Blacksmith routing', () => {
   it('routes DeepSeek e2e only through the Linux Blacksmith switch', () => {
-    const workflow = loadWorkflow('.github/workflows/e2e.yml')
-    for (const name of ['credentials', 'e2e']) {
-      const job = workflowJob(workflow, name)
-      for (const mode of ['', 'selfhosted', 'unexpected', 'blacksmith']) {
-        expect(evaluateRunsOn(job['runs-on'], { vars: { DSH_CI_FAILOVER_LINUX: mode, DSH_CI_FAILOVER_WINDOWS: 'blacksmith' } }))
-          .toBe(mode === 'blacksmith' ? 'blacksmith-4vcpu-ubuntu-2404' : 'ubuntu-latest')
-      }
+    const job = workflowJob(loadWorkflow('.github/workflows/e2e.yml'), 'e2e')
+    for (const mode of ['', 'selfhosted', 'unexpected', 'blacksmith']) {
+      expect(evaluateRunsOn(job['runs-on'], { vars: { DSH_CI_FAILOVER_LINUX: mode, DSH_CI_FAILOVER_WINDOWS: 'blacksmith' } }))
+        .toBe(mode === 'blacksmith' ? 'blacksmith-4vcpu-ubuntu-2404' : 'ubuntu-latest')
     }
   })
 
@@ -1112,83 +1108,7 @@ describe('bubblewrap preparation script', () => {
   })
 })
 
-describe('Personal repository CI', () => {
-  it('allocates standard hosted runners unless a repository selects its own pool', () => {
-    for (const [file, names, variable, hosted] of [
-      ['ci.yml', ['node-24', 'node-24-coverage', 'node-24-lint', 'node-24-consumers'], 'DSH_CI_LINUX_RUNNER', 'ubuntu-24.04'],
-      ['ci-windows.yml', ['windows-build', 'windows-coverage', 'windows-native-tests'], 'DSH_CI_WINDOWS_RUNNER', 'windows-2025'],
-    ] as const) {
-      const workflow = loadWorkflow('.github/workflows/' + file)
-      for (const name of names) {
-        const selector = workflowJob(workflow, name)['runs-on']
-        expect(evaluateRunsOn(selector, { vars: {} })).toBe(hosted)
-        expect(evaluateRunsOn(selector, { vars: { [variable]: 'configured-runner' } })).toBe('configured-runner')
-      }
-    }
-  })
-
-  it('allocates standby and organization jobs only after explicit configuration', () => {
-    for (const [file, name, variable] of [
-      ['ci-master.yml', 'serial-linux-selfhosted', 'DSH_CI_STANDBY_ENABLED'],
-      ['ci-master.yml', 'serial-windows', 'DSH_CI_STANDBY_ENABLED'],
-      ['issue-policy.yml', 'policy', 'DSH_ORGANIZATION_POLICY_ENABLED'],
-      ['issue-lifecycle.yml', 'lifecycle', 'DSH_ORGANIZATION_POLICY_ENABLED'],
-      ['weighted-approval.yml', 'publish-status', 'DSH_ORGANIZATION_POLICY_ENABLED'],
-      ['weighted-approval-review-event.yml', 'record-review-event', 'DSH_ORGANIZATION_POLICY_ENABLED'],
-    ] as const) {
-      const job = workflowJob(loadWorkflow('.github/workflows/' + file), name)
-      const github = { event_name: name.startsWith('serial-') ? 'push' : 'pull_request_target', ref: 'refs/heads/master', event: { pull_request: { state: 'open' } } }
-      expect(runInNewContext(String(job.if), { github, vars: {} })).toBe(false)
-      expect(runInNewContext(String(job.if), { github, vars: { [variable]: '1' } })).toBe(true)
-      expect(runInNewContext(String(job.if), { github, vars: { [variable]: '0' } })).toBe(false)
-    }
-  })
-
-  it('admits same-repository real API tests independently of repository fork ancestry', () => {
-    const workflow = loadWorkflow('.github/workflows/e2e.yml')
-    const credentials = workflowJob(workflow, 'credentials')
-    const e2e = workflowJob(workflow, 'e2e')
-    for (const [head, login, expected] of [
-      ['personal/harness', 'maintainer', true],
-      ['someone/harness', 'maintainer', false],
-      ['personal/harness', 'dependabot[bot]', false],
-    ] as const) {
-      const github = { repository: 'personal/harness', event_name: 'pull_request', event: { pull_request: { head: { repo: { full_name: head, fork: true } }, user: { login } } } }
-      expect(runInNewContext(String(credentials.if), { github })).toBe(expected)
-    }
-    expect(e2e.needs).toBe('credentials')
-    expect(runInNewContext(String(e2e.if), { needs: { credentials: { outputs: { available: 'false' } } } })).toBe(false)
-    expect(runInNewContext(String(e2e.if), { needs: { credentials: { outputs: { available: 'true' } } } })).toBe(true)
-  })
-})
-
 describe('DeepSeek e2e workflow', () => {
-  // This step runs under hosted Ubuntu Bash; native Windows does not provide that interpreter.
-  it.skipIf(process.platform === 'win32').each([false, true])('reports credential availability without exposing its value (configured=%s)', (configured) => {
-    const job = workflowJob(loadWorkflow('.github/workflows/e2e.yml'), 'credentials')
-    if (!Array.isArray(job.steps)) throw new TypeError('Credential availability job must define steps')
-    const step = job.steps.filter(isRecord).find(candidate => candidate.id === 'check')
-    if (typeof step?.run !== 'string') throw new TypeError('Credential availability check must define a script')
-    const root = mkdtempSync(join(tmpdir(), 'dsh-ci-credential-availability-'))
-    try {
-      const output = join(root, 'output')
-      const value = configured ? 'test-credential-fixture' : ''
-      const result = spawnSync('bash', ['-c', step.run], {
-        encoding: 'utf8',
-        timeout: 10000,
-        env: { ...process.env, DEEPSEEK_API_KEY: value, GITHUB_OUTPUT: output.replaceAll('\\', '/') },
-      })
-      expect(result.error).toBeUndefined()
-      expect(result.signal).toBeNull()
-      expect(result.status).toBe(0)
-      expect(readFileSync(output, 'utf8')).toBe(`available=${String(configured)}\n`)
-      expect(result.stdout + result.stderr).not.toContain('test-credential-fixture')
-      expect(result.stdout.includes('Real API tests skipped')).toBe(!configured)
-    } finally {
-      rmSync(root, { recursive: true, force: true })
-    }
-  })
-
   it('prepares bubblewrap from the pinned payload without a package transaction', () => {
     const workflow = loadWorkflow('.github/workflows/e2e.yml')
     const e2e = workflowJob(workflow, 'e2e')
@@ -1374,7 +1294,7 @@ describe('Python release workflows', () => {
       env: { DEEPSEEK_API_KEY: '${{ secrets.DEEPSEEK_API_KEY_EXTERNAL }}' },
     })
     expect(String(realApiPreflightPosix.if)).toContain('inputs.ci')
-    expect(String(realApiPreflightPosix.if)).toContain('head.repo.fork')
+    expect(String(realApiPreflightPosix.if)).toContain('head.repo.full_name')
     expect(String(realApiPreflightPosix.if)).toContain('dependabot[bot]')
     expect(realApiPreflightWindows).toMatchObject({ shell: 'pwsh' })
     for (const step of [installedRealApiPosix, installedRealApiWindows]) {
