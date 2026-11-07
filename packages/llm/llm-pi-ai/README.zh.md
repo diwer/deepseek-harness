@@ -37,6 +37,8 @@ kind: "package-reference"
 
 每个 profile 都可以设置 `retryPolicy`；省略时使用 normal mode、最多重试五次。`apiKeyEnv` 是按请求经 harness 凭据 seam 解析的凭据引用，因此配置文件绝不包含密钥；解析为空的引用会让请求以 `MISSING_CREDENTIAL` 失败。省略它会让路由保持已配置但无密钥（configured-but-keyless）状态，对已安装目录路由而言即交由 pi-ai 提供方原生的环境发现。
 
+随包提供商目录包含 **Command Code**（`commandcode`），默认地址为 `https://api.commandcode.ai/provider/v1`，原生凭据引用为 `CMD_API_KEY`。设置页会将其列在第三方提供商中，无需声明自定义 API。随包模型快照来自[公开 Provider API 模型列表](https://commandcode.ai/docs/provider)：Claude 模型使用 Anthropic Messages，其余模型使用 OpenAI Chat Completions。模型发现读取本地快照，不访问 DSH 服务端或提供商。公开列表未报告输入模态和输出上限，因此这些模型声明文本输入并采用适配器的输出上限回退值；已确认的模型能力可通过 `modelOverrides` 声明。Go 套餐不包含 Provider API 访问权限。
+
 ```yaml
 - name: '@deepseek-ai/dsh-llm-pi-ai'
   config:

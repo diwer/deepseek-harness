@@ -127,16 +127,16 @@ describe('llm-pi-ai real dormant composition', () => {
       '- id: llm-pi-ai',
       '  config:',
       '    providers:',
-      '      deepseek:',
+      '      commandcode:',
       '        apiKeyEnv: PI_COMPOSITION_KEY',
       `        baseURL: ${server.url}`,
       '',
     ].join('\n'))
     await vi.waitFor(() => {
-      expect(ctx.llm.listProviders().map(provider => provider.id)).toEqual(['deepseek'])
+      expect(ctx.llm.listProviders().map(provider => provider.id)).toEqual(['commandcode'])
     }, { timeout: 5000 })
 
-    const result = await assemble(ctx, { provider: 'deepseek', model: 'deepseek-flash', messages: [] })
+    const result = await assemble(ctx, { provider: 'commandcode', model: 'deepseek/deepseek-v4.1-flash', messages: [] })
     expect(result.message.content).toEqual([{ type: 'text', text: 'hello' }])
     expect(server.headers[0]?.authorization).toBe('Bearer key-from-store')
   })

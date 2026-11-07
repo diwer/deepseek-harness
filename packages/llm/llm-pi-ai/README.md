@@ -37,6 +37,8 @@ Choose this adapter when the same composition serves several providers, when a r
 
 Each profile may set a `retryPolicy`; omission uses normal mode with five retries. `apiKeyEnv` is a credential reference resolved per request through the harness credential seam, so no secret enters the configuration file; a reference that resolves to nothing fails the request with `MISSING_CREDENTIAL`. Omitting it leaves the route configured-but-keyless, which for an installed catalog route defers to pi-ai's provider-native ambient discovery.
 
+The bundled provider directory includes **Command Code** (`commandcode`) at `https://api.commandcode.ai/provider/v1`, with `CMD_API_KEY` as its native credential reference. Settings lists it under third-party providers without a custom API declaration. Its bundled snapshot comes from the [public Provider API model listing](https://commandcode.ai/docs/provider): Claude models use Anthropic Messages and the other models use OpenAI Chat Completions. Discovery reads this local snapshot without contacting a DSH server or the provider. The public listing does not report input modalities or output caps, so these models declare text input and use the adapter's output-cap fallback; verified model capabilities can be supplied through `modelOverrides`. The Go plan does not include Provider API access.
+
 ```yaml
 - name: '@deepseek-ai/dsh-llm-pi-ai'
   config:

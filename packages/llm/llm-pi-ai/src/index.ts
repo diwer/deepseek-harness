@@ -66,7 +66,7 @@ import type {} from '@deepseek-ai/dsh-fs'
 import { deepEqualJson } from '@deepseek-ai/dsh-util-values'
 import { PiAiAdapter } from './adapter.ts'
 import { authContextFrom, credentialStoreFrom } from './auth.ts'
-import { catalogProvider, catalogProviderIds } from './catalog.ts'
+import { catalogProvider, catalogProviderDisplayName, catalogProviderIds } from './catalog.ts'
 import { assertServiceable, Config, resolveProfiles } from './config.ts'
 import type { ResolvedPiAiProviderProfile } from './config.ts'
 import { discoverModels } from './discovery.ts'
@@ -166,7 +166,7 @@ function directoryEntries(
       ...error === undefined ? {} : { error },
     })
   }
-  for (const provider of catalogProviderIds()) declare(provider, provider)
+  for (const provider of catalogProviderIds()) declare(provider, catalogProviderDisplayName(provider))
   for (const [provider, profile] of profiles) declare(provider, profile.displayName, profile.catalogError)
   return [...entries.values()]
 }
