@@ -54,7 +54,7 @@ export interface ProviderEditorProps {
   provider: string
   /** Display name for the card title. */
   displayName: string
-  /** Hide the title row (the add card renders its own provider select). */
+  /** Hide the title row (the add card renders its own provider search). */
   hideTitle?: boolean
   /**
    * Whether the adapter reports this route as hand-declared — absent from its
