@@ -94,6 +94,11 @@ describe('product identifiers', () => {
     'docs/upgrade-guide/v0.2.0-rc.2/schedule-bundle-retired/guide.zh.md',
     'docs/upgrade-guide/v0.2.1-alpha.1/subagent-preset-composition/guide.md',
     'docs/upgrade-guide/v0.2.1-alpha.1/subagent-preset-composition/guide.zh.md',
+    'scripts/gen-tool-catalog.ts',
+    'docs/tool-catalog.md',
+    'docs/tool-catalog.zh.md',
+    'docs/upgrade-guide/v0.2.2-alpha.2/fs-observation-policy-default-off/guide.md',
+    'docs/upgrade-guide/v0.2.2-alpha.2/fs-observation-policy-default-off/guide.zh.md',
     'docs/user/guide/schedule.md',
     'docs/user/guide/schedule.zh.md',
     'packages/bundle/web-app/cordis.patch.yml',
@@ -125,6 +130,18 @@ describe('product identifiers', () => {
     expect(rescopeText(text, file)).toEqual({ text: scoped, lines: 2 })
     expect(rescopeText(scoped, file)).toEqual({ text: scoped, lines: 0 })
     expect(rescopeText(scoped, file, true)).toEqual({ text, lines: 2 })
+  })
+
+  it.each([
+    'scripts/gen-tool-catalog.ts',
+    'docs/tool-catalog.md',
+    'docs/tool-catalog.zh.md',
+    'docs/upgrade-guide/v0.2.2-alpha.2/fs-observation-policy-default-off/guide.md',
+    'docs/upgrade-guide/v0.2.2-alpha.2/fs-observation-policy-default-off/guide.zh.md',
+  ])('renames package imports alongside the tool-policy preset in %s', (file) => {
+    const code = "const preset = 'cordis'\nimport { Context } from 'cordis'\n"
+    const text = file.endsWith('.md') ? `The \`cordis\` preset.\n\`\`\`ts\n${code}\`\`\`\n` : code
+    expectRoundTrip(file, text, text.replace("from 'cordis'", "from '@deepseek-ai/cordis'"), 1)
   })
 
   it('keeps unlisted package references subject to residue detection', () => {

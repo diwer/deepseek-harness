@@ -65,7 +65,8 @@ function fixture(channel: 'nightly' | 'latest' = 'nightly', version = '1.1.0-alp
   const beforeRestart = vi.fn(async () => true)
   const downloadResult = vi.fn()
   const states: DesktopUpdateState[] = []
-  const updater = Object.assign(events, { checkForUpdates, downloadUpdate, quitAndInstall, setFeedURL }) as unknown as AppUpdater
+  const updater = Object.assign(events, { checkForUpdates, downloadUpdate, quitAndInstall }) as unknown as AppUpdater
+  updater.setFeedURL = setFeedURL
   const coordinator = new DesktopUpdateCoordinator(
     (state) => { states.push(state); return state },
     beforeRestart, updater, () => enabled, () => version, downloadResult, channel, tracking,
