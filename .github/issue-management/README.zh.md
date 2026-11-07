@@ -8,6 +8,8 @@ description: "面向仓库维护者的 Issue 策略强制范围、Project 访问
 
 ## 摘要
 
+Issue 与 Project 工作流仅在 `DSH_ORGANIZATION_POLICY_ENABLED=1` 时运行；独立仓库保留代码检查，无需采用组织 Project 策略。见 [CI 配置](../../docs/development.zh.md)。
+
 贡献者可以引用 Issue 作为背景，而无需让 PR（Pull Request）校验依赖 Project 可用性。解决型引用还会强制检查 Project Priority。必需的 `Issue policy` job 与独立的生命周期工作流使用受信任的默认分支代码。
 
 ## 目录

@@ -19,9 +19,11 @@ concurrency:
   group: weighted-approval-${{ (github.event.pull_request.number || github.event.issue.number) && format('weighted-approval-review-event:{0}', github.event.pull_request.number || github.event.issue.number) || github.event.workflow_run.display_title }}
   cancel-in-progress: false
 
+# Organization policy is optional; code-quality workflows run independently.
 jobs:
   publish-status:
     if: >-
+      vars.DSH_ORGANIZATION_POLICY_ENABLED == '1' &&
       (github.event_name != 'pull_request_target' || github.event.pull_request.state == 'open') &&
       (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success') &&
       (github.event_name != 'issue_comment' || (github.event.issue.pull_request && github.event.issue.state == 'open' &&

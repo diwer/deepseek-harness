@@ -2,6 +2,8 @@
 
 ## Summary
 
+The workflow and review-event recorder run only with `DSH_ORGANIZATION_POLICY_ENABLED=1`; code-quality checks run independently. Configure this repository’s approval policy and App before opting in. See [CI configuration](../../docs/development.md#ci-gates).
+
 The [`weighted-approval` workflow](../workflows/weighted-approval.yml) publishes an approval score for branch rules. Reviewers are chosen manually; an eligible delegation command requests review from its recipient.
 
 ## Table of Contents

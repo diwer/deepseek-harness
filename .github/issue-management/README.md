@@ -8,6 +8,8 @@ English | [中文](README.zh.md)
 
 ## Summary
 
+Issue and Project workflows run only with `DSH_ORGANIZATION_POLICY_ENABLED=1`; independent repositories retain their code checks without adopting organization Project policy. See [CI configuration](../../docs/development.md).
+
 Contributors can link Issues as context without coupling pull-request validation to Project availability. Resolving references additionally enforce Project Priority. The required `Issue policy` job and the separate lifecycle workflow use trusted default-branch code.
 
 ## Table of Contents
