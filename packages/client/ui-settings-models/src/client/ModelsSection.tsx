@@ -8,7 +8,7 @@
  * the first-run posture — no provider on the page can serve requests yet — and
  * only until the user closes that card. The add flow is one card behind one
  * button: a mode switch chooses between adopting a dormant directory provider
- * (the catalog select over the provider editor) and declaring a custom model
+ * (the catalog search over the provider editor) and declaring a custom model
  * API (the create form). A panel mounts the first time its mode is shown and
  * stays mounted, hidden, while the card is open and its mode stays offered,
  * so switching modes discards neither draft and an unvisited mode costs
@@ -23,7 +23,7 @@
 
 import { useId, useState } from 'react'
 import type { ReactNode } from 'react'
-import { Button, IconPlusOutlineRegular, Modal, SegmentedControl } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, IconPlusOutlineRegular, Menu, Modal, SegmentedControl, rankByName } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { InjectFace, PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
 import type { LlmNativeAuth, SettingsNamespaceView } from '@deepseek-ai/dsh-api-remotes/client'
 // Type-only: pulls this package's SlotMap merge (the two Models child slots).
@@ -261,6 +261,8 @@ function Loaded({ injected, renderSlot }: { injected: ModelsSectionFace; renderS
   /** Whether each add panel has a write or an interrogation in flight. */
   const [catalogBusy, setCatalogBusy] = useState(false)
   const [customBusy, setCustomBusy] = useState(false)
+  const [providerQuery, setProviderQuery] = useState<string | undefined>(undefined)
+  const [providerSearchOpen, setProviderSearchOpen] = useState(false)
   /** Base of the add card's tab and panel ids. */
   const addId = useId()
   const [deleteTarget, setDeleteTarget] = useState<EditorTarget | undefined>(undefined)
@@ -288,6 +290,8 @@ function Loaded({ injected, renderSlot }: { injected: ModelsSectionFace; renderS
     setAddOpen(false)
     setCatalogBusy(false)
     setCustomBusy(false)
+    setProviderQuery(undefined)
+    setProviderSearchOpen(false)
   }
 
   const closeEditor = (changed: boolean, target: ProviderIdentity): void => {
@@ -371,6 +375,20 @@ function Loaded({ injected, renderSlot }: { injected: ModelsSectionFace; renderS
     const namespace = state.namespaces.get(row.entry.settingsNs)
     return namespace === undefined || row.configured ? [] : [{ row, namespace }]
   })
+  const providerMatches = rankByName(addable.map(candidate => ({
+    ...candidate, name: candidate.row.entry.provider, label: candidate.row.entry.displayName,
+  })), (providerQuery ?? '').trim())
+  const closeProviderSearch = (): void => {
+    setProviderSearchOpen(false)
+    setProviderQuery(undefined)
+  }
+  const pickProvider = (provider: string): void => {
+    const picked = addable.find(candidate => candidate.row.entry.provider === provider)
+    /* v8 ignore next -- the menu only lists addable rows */
+    if (picked === undefined) return
+    setEditing(targetOf(picked.row))
+    closeProviderSearch()
+  }
   // Hand-declared routes live in the pi-ai namespace, which is also the only
   // one whose schema names the protocols one may speak; without it mounted
   // there is nothing to declare and the mode is not offered.
@@ -618,22 +636,44 @@ function Loaded({ injected, renderSlot }: { injected: ModelsSectionFace; renderS
                   >
                     <div className={styles['field']}>
                       <span className={styles['fieldLabel']}>{t('provider')}</span>
-                      <select
-                        className={`${styles['input']} ${styles['selectInput']}`}
-                        value={draft.target.provider}
-                        aria-label={t('provider')}
-                        disabled={catalogBusy}
-                        onChange={(event) => {
-                          const picked = addable.find(candidate => candidate.row.entry.provider === event.target.value)
-                          /* v8 ignore next -- the select only lists addable rows */
-                          if (picked === undefined) return
-                          setEditing(targetOf(picked.row))
-                        }}
+                      <Menu
+                        open={providerSearchOpen && mode === 'catalog' && !catalogBusy}
+                        portal
+                        minWidthFromAnchor
+                        autoFocus={providerQuery === undefined}
+                        className={styles['providerSearch']}
+                        selectedId={draft.target.provider}
+                        items={providerMatches.map(({ row }) => ({ id: row.entry.provider, label: row.entry.displayName }))}
+                        onSelect={pickProvider}
+                        onClose={closeProviderSearch}
+                        anchor={<input
+                          className={styles['input']}
+                          type="text"
+                          value={providerQuery ?? draft.target.provider}
+                          placeholder={t('providerSearch')}
+                          aria-label={t('provider')}
+                          aria-haspopup="menu"
+                          aria-expanded={providerSearchOpen && mode === 'catalog' && !catalogBusy}
+                          autoComplete="off"
+                          autoCapitalize="none"
+                          spellCheck={false}
+                          disabled={catalogBusy}
+                          onFocus={(event) => { event.currentTarget.select() }}
+                          onChange={(event) => { setProviderQuery(event.target.value); setProviderSearchOpen(true) }}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Home' || event.key === 'End') event.stopPropagation()
+                            if (!event.nativeEvent.isComposing && !providerSearchOpen
+                              && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+                              event.preventDefault()
+                              setProviderSearchOpen(true)
+                            }
+                          }}
+                        />}
                       >
-                        {addable.map(({ row }) => (
-                          <option key={row.entry.provider} value={row.entry.provider}>{row.entry.displayName}</option>
-                        ))}
-                      </select>
+                        {providerMatches.length === 0
+                          ? <p className={styles['candidateEmpty']} role="status">{t('providerNoMatches')}</p>
+                          : null}
+                      </Menu>
                     </div>
                     <ProviderEditor
                       key={draft.target.provider}
