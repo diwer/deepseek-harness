@@ -30,10 +30,12 @@ concurrency:
   group: issue-lifecycle-${{ github.event.issue.number || github.event.pull_request.number || github.run_id }}
   cancel-in-progress: false
 
+# Organization policy is optional; code-quality workflows run independently.
 jobs:
   lifecycle:
     name: Issue lifecycle
     if: >-
+      vars.DSH_ORGANIZATION_POLICY_ENABLED == '1' &&
       (github.event_name != 'pull_request_review' || github.event.review.state == 'changes_requested') &&
       (github.event_name != 'pull_request' || github.event.action != 'edited' || github.event.changes.body != null)
     runs-on: ubuntu-latest

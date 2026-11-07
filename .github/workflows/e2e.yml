@@ -6,16 +6,11 @@ name: E2E (real DeepSeek API)
 # https://api.deepseek.com/anthropic (DEEPSEEK_BASE_URL is pinned explicitly so a
 # stray repo-root .env can't redirect the run).
 #
-# pull_request IS a trigger, but GitHub withholds repo secrets from BOTH forked
-# PRs and Dependabot PRs (the latter are same-repo, fork==false, but still
-# keyless). The job-level `if:` below skips the whole job for those untrusted
-# PRs. The Dependabot test keys on the PR AUTHOR (pull_request.user.login), not
-# github.actor (the run trigger) — a maintainer reopening a Dependabot PR would
-# make github.actor human while the PR is still keyless. When the job runs, the
-# secret is expected, so the preflight hard-fails if it's missing (a missing
-# secret would otherwise make the self-skipping suite report a false green). A
-# job skipped by a job-level `if:` reports as a SUCCESSFUL check, so this
-# workflow is safe to use as a required status check if desired.
+# A trusted-event availability job exposes only whether the repository key
+# exists. Missing credentials explicitly skip the real-API job. A configured
+# key must still pass the job's preflight and real provider tests.
+# Same-repository PRs remain trusted when this repository itself is a fork;
+# external PR heads and Dependabot receive no credentials.
 #
 # SECURITY — NEVER change this trigger to `pull_request_target`. `pull_request`
 # checks out and runs the PR's HEAD code WITHOUT secrets for forks, which is what
@@ -52,16 +47,36 @@ env:
   DSH_TELEMETRY_DISABLED: '1'
 
 jobs:
+  credentials:
+    name: Real API availability
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name != 'pull_request'
+      || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]')
+    outputs:
+      available: ${{ steps.check.outputs.available }}
+    steps:
+      - name: Check repository credential availability
+        id: check
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY_EXTERNAL }}
+        shell: bash
+        run: |
+          if [ -n "${DEEPSEEK_API_KEY:-}" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Real API tests skipped: configure DEEPSEEK_API_KEY_EXTERNAL to enable them."
+          fi
+
   e2e:
+    needs: credentials
     runs-on: >-
       ${{ vars.DSH_CI_FAILOVER_LINUX == 'blacksmith'
           && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     name: e2e
-    # Run on every trusted event. Skip untrusted PRs (forks + Dependabot) where
-    # the secret is withheld — they would otherwise hard-fail the preflight.
-    if: >-
-      github.event_name != 'pull_request'
-      || !(github.event.pull_request.head.repo.fork || github.event.pull_request.user.login == 'dependabot[bot]')
+    # The availability job runs only for trusted events and never checks out PR code.
+    if: needs.credentials.outputs.available == 'true'
     # Profile e2e files can each own several complete dsh subprocess trees, so
     # four file workers preserve process/PTY headroom. Tests retain 120s/test
     # and retry 2; 45m still bounds retry storms against a slow API.
@@ -85,10 +100,8 @@ jobs:
       - name: Prepare bubblewrap (unrestrict userns)
         run: bash scripts/prepare-ci-bubblewrap.sh
 
-      # Guard against a false green: the e2e suites self-skip when the key is
-      # absent, so a missing/misconfigured secret would otherwise pass as
-      # "all skipped". This job only runs on trusted events (the `if:` above
-      # excludes keyless PRs), so the secret MUST be present — fail loudly if not.
+      # Credentials can be revoked after the availability job. A selected real
+      # API run must fail rather than let the test suites silently self-skip.
       - name: Preflight (require DEEPSEEK_API_KEY)
         env:
           # Repo secret DEEPSEEK_API_KEY_EXTERNAL holds the external-API key;

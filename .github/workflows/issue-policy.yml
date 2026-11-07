@@ -11,8 +11,10 @@ permissions:
   issues: read
   pull-requests: read
 
+# Organization policy is optional; code-quality workflows run independently.
 jobs:
   policy:
+    if: vars.DSH_ORGANIZATION_POLICY_ENABLED == '1'
     name: Issue policy
     runs-on: ubuntu-latest
     steps:

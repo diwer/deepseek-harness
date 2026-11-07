@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 import { runInNewContext } from 'node:vm'
 import * as yaml from 'js-yaml'
 import { describe, expect, it } from 'vitest'
@@ -407,7 +408,7 @@ describe('CI workflow', () => {
       expect(job['runs-on'], `${jobName} runs-on must not use the Linux failover switch`).not.toContain('DSH_CI_FAILOVER_LINUX')
       expect(job['runs-on']).toContain('self-hosted')
       expect(job['runs-on']).toContain('dsh-win-ci')
-      expect(job['runs-on']).toContain('dsh-windows-2025-16core')
+      expect(job['runs-on']).toContain('DSH_CI_WINDOWS_RUNNER')
       const cores = jobName === 'windows-native-tests' ? 2 : 16
       expect(evaluateRunsOn(job['runs-on'], { vars: { DSH_CI_FAILOVER_WINDOWS: 'blacksmith' } }))
         .toBe(`blacksmith-${cores}vcpu-windows-2025`)
@@ -505,7 +506,7 @@ describe('CI workflow', () => {
     expect(report?.run).toContain('Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append')
 
     // serial-windows: master-only standby, self-hosted, non-blocking, lives in ci-master.
-    expect(serialWindows.if).toBe("github.event_name == 'push' && github.ref == 'refs/heads/master'")
+    expect(serialWindows.if).toBe("github.event_name == 'push' && github.ref == 'refs/heads/master' && vars.DSH_CI_STANDBY_ENABLED == '1'")
     expect(serialWindows['runs-on']).toEqual(['self-hosted', 'dsh-win-ci', 'windows'])
     expect(serialWindows.name).toBe('serial / windows (self-hosted standby)')
     // Its store must share the ReFS workspace volume for clone; the install
@@ -594,9 +595,9 @@ describe('CI workflow', () => {
       })
     }
     for (const [name, selector, variable, pool, hosted] of [
-      ['linux gates', selectors.linux, 'DSH_CI_FAILOVER_LINUX', ['self-hosted', 'linux', 'x64', 'vm-backup'], 'dsh-ubuntu-24-04-16core'],
+      ['linux gates', selectors.linux, 'DSH_CI_FAILOVER_LINUX', ['self-hosted', 'linux', 'x64', 'vm-backup'], 'ubuntu-24.04'],
       ['linux aggregate', selectors.linuxAggregate, 'DSH_CI_FAILOVER_LINUX', ['self-hosted', 'linux', 'x64', 'vm-backup'], 'ubuntu-latest'],
-      ['windows lanes', selectors.windows, 'DSH_CI_FAILOVER_WINDOWS', ['self-hosted', 'dsh-win-ci', 'windows'], 'dsh-windows-2025-16core'],
+      ['windows lanes', selectors.windows, 'DSH_CI_FAILOVER_WINDOWS', ['self-hosted', 'dsh-win-ci', 'windows'], 'windows-2025'],
     ] as const) {
       expect(evaluate(selector, { [variable]: 'blacksmith' }), `${name} blacksmith value`).toMatch(/^blacksmith-/)
       expect(evaluate(selector, { [variable]: 'selfhosted' }), `${name} selfhosted value`).toEqual(pool)
@@ -840,7 +841,7 @@ describe('CI workflow', () => {
       if (!isRecord(job)) throw new TypeError(`${name} must be defined`)
       expect(job.concurrency).toBeUndefined()
       // Standby drills remain post-merge work, but share run cancellation.
-      expect(job.if).toBe("github.event_name == 'push' && github.ref == 'refs/heads/master'")
+      expect(job.if).toBe("github.event_name == 'push' && github.ref == 'refs/heads/master' && vars.DSH_CI_STANDBY_ENABLED == '1'")
     }
 
     // Pin the post-merge runtime, Wine, and standby inventory.
@@ -1108,7 +1109,82 @@ describe('bubblewrap preparation script', () => {
   })
 })
 
+describe('Personal repository CI', () => {
+  it('allocates standard hosted runners unless a repository selects its own pool', () => {
+    for (const [file, names, variable, hosted] of [
+      ['ci.yml', ['node-24', 'node-24-coverage', 'node-24-lint', 'node-24-consumers'], 'DSH_CI_LINUX_RUNNER', 'ubuntu-24.04'],
+      ['ci-windows.yml', ['windows-build', 'windows-coverage', 'windows-native-tests'], 'DSH_CI_WINDOWS_RUNNER', 'windows-2025'],
+    ] as const) {
+      const workflow = loadWorkflow('.github/workflows/' + file)
+      for (const name of names) {
+        const selector = workflowJob(workflow, name)['runs-on']
+        expect(evaluateRunsOn(selector, { vars: {} })).toBe(hosted)
+        expect(evaluateRunsOn(selector, { vars: { [variable]: 'configured-runner' } })).toBe('configured-runner')
+      }
+    }
+  })
+
+  it('allocates standby and organization jobs only after explicit configuration', () => {
+    for (const [file, name, variable] of [
+      ['ci-master.yml', 'serial-linux-selfhosted', 'DSH_CI_STANDBY_ENABLED'],
+      ['ci-master.yml', 'serial-windows', 'DSH_CI_STANDBY_ENABLED'],
+      ['issue-policy.yml', 'policy', 'DSH_ORGANIZATION_POLICY_ENABLED'],
+      ['issue-lifecycle.yml', 'lifecycle', 'DSH_ORGANIZATION_POLICY_ENABLED'],
+      ['weighted-approval.yml', 'publish-status', 'DSH_ORGANIZATION_POLICY_ENABLED'],
+      ['weighted-approval-review-event.yml', 'record-review-event', 'DSH_ORGANIZATION_POLICY_ENABLED'],
+    ] as const) {
+      const job = workflowJob(loadWorkflow('.github/workflows/' + file), name)
+      const github = { event_name: name.startsWith('serial-') ? 'push' : 'pull_request_target', ref: 'refs/heads/master', event: { pull_request: { state: 'open' } } }
+      expect(runInNewContext(String(job.if), { github, vars: {} })).toBe(false)
+      expect(runInNewContext(String(job.if), { github, vars: { [variable]: '1' } })).toBe(true)
+      expect(runInNewContext(String(job.if), { github, vars: { [variable]: '0' } })).toBe(false)
+    }
+  })
+
+  it('admits same-repository real API tests independently of repository fork ancestry', () => {
+    const workflow = loadWorkflow('.github/workflows/e2e.yml')
+    const credentials = workflowJob(workflow, 'credentials')
+    const e2e = workflowJob(workflow, 'e2e')
+    for (const [head, login, expected] of [
+      ['personal/harness', 'maintainer', true],
+      ['someone/harness', 'maintainer', false],
+      ['personal/harness', 'dependabot[bot]', false],
+    ] as const) {
+      const github = { repository: 'personal/harness', event_name: 'pull_request', event: { pull_request: { head: { repo: { full_name: head, fork: true } }, user: { login } } } }
+      expect(runInNewContext(String(credentials.if), { github })).toBe(expected)
+    }
+    expect(e2e.needs).toBe('credentials')
+    expect(runInNewContext(String(e2e.if), { needs: { credentials: { outputs: { available: 'false' } } } })).toBe(false)
+    expect(runInNewContext(String(e2e.if), { needs: { credentials: { outputs: { available: 'true' } } } })).toBe(true)
+  })
+})
+
 describe('DeepSeek e2e workflow', () => {
+  it.each([false, true])('reports credential availability without exposing its value (configured=%s)', (configured) => {
+    const job = workflowJob(loadWorkflow('.github/workflows/e2e.yml'), 'credentials')
+    if (!Array.isArray(job.steps)) throw new TypeError('Credential availability job must define steps')
+    const step = job.steps.filter(isRecord).find(candidate => candidate.id === 'check')
+    if (typeof step?.run !== 'string') throw new TypeError('Credential availability check must define a script')
+    const root = mkdtempSync(join(tmpdir(), 'dsh-ci-credential-availability-'))
+    try {
+      const output = join(root, 'output')
+      const value = configured ? 'test-credential-fixture' : ''
+      const result = spawnSync('bash', ['-c', step.run], {
+        encoding: 'utf8',
+        timeout: 10000,
+        env: { ...process.env, DEEPSEEK_API_KEY: value, GITHUB_OUTPUT: output.replaceAll('\\', '/') },
+      })
+      expect(result.error).toBeUndefined()
+      expect(result.signal).toBeNull()
+      expect(result.status).toBe(0)
+      expect(readFileSync(output, 'utf8')).toBe(`available=${String(configured)}\n`)
+      expect(result.stdout + result.stderr).not.toContain('test-credential-fixture')
+      expect(result.stdout.includes('Real API tests skipped')).toBe(!configured)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('prepares bubblewrap from the pinned payload without a package transaction', () => {
     const workflow = loadWorkflow('.github/workflows/e2e.yml')
     const e2e = workflowJob(workflow, 'e2e')
@@ -1429,7 +1505,7 @@ describe('Weighted approval workflow', () => {
       'cancel-in-progress': false,
     })
     expect(job).toMatchObject({
-      if: "(github.event_name != 'pull_request_target' || github.event.pull_request.state == 'open') && "
+      if: "vars.DSH_ORGANIZATION_POLICY_ENABLED == '1' && (github.event_name != 'pull_request_target' || github.event.pull_request.state == 'open') && "
         + "(github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success') && "
         + "(github.event_name != 'issue_comment' || (github.event.issue.pull_request && github.event.issue.state == 'open' &&\n"
         + "  (contains(github.event.comment.body, '/delegate') || contains(github.event.changes.body.from, '/delegate'))))",
@@ -1494,7 +1570,7 @@ describe('Weighted approval workflow', () => {
       run: 'node .github/review-ownership/check-approval.mjs',
     })
     expect(recordJob).toMatchObject({
-      if: "github.event.pull_request.state == 'open'",
+      if: "vars.DSH_ORGANIZATION_POLICY_ENABLED == '1' && github.event.pull_request.state == 'open'",
       name: 'record weighted approval review event',
       'runs-on': 'ubuntu-latest',
       'timeout-minutes': 2,
@@ -1560,7 +1636,7 @@ describe('Issue lifecycle workflow', () => {
     expect(preflightStep?.run).toContain('if [ -f .github/issue-management/selective-preflight.json ]; then')
     expect(preflightStep?.run).toContain('node .github/issue-management/policy.mjs pr-preflight')
     expect(preflightStep?.if).toBeUndefined()
-    expect(policyJob.if).toBeUndefined()
+    expect(policyJob.if).toBe("vars.DSH_ORGANIZATION_POLICY_ENABLED == '1'")
     expect(validateStep?.if).toBe("${{ steps.preflight.outputs.legacy-automated != 'true' }}")
 
     expect(tokenStep).toMatchObject({
