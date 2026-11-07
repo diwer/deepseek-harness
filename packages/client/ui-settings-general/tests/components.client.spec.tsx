@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { contextMenuHook } from '@deepseek-ai/dsh-client-test-runtime'
 import type { GlobalStandardProps } from '@deepseek-ai/dsh-client-ui-slots'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
@@ -43,6 +44,7 @@ const kit = {
   useSessions: unusedHook, useSessionStatus,
   usePanelInfo, useSessionRetainInfo: () => undefined, useResource, useWorkspaces: unusedHook,
   ...allowAllAccess,
+  useContextMenu: contextMenuHook(),
 }
 
 describe('Desktop collapsed update badge', () => {
@@ -54,6 +56,9 @@ describe('Desktop collapsed update badge', () => {
       useConnectionState: (select => select(connection)) as Parameters<typeof DesktopUpdateBadge>[0]['useConnectionState'],
     }
     const view = render(<DesktopUpdateBadge {...props} />)
+    expect(screen.queryByRole('img')).toBeNull()
+    state = { ...state, presentation: { phase: 'unavailable' } }
+    view.rerender(<DesktopUpdateBadge {...props} />)
     expect(screen.queryByRole('img')).toBeNull()
     state = { ...state, presentation: { phase: 'available', version: '1.0.1' } }
     view.rerender(<DesktopUpdateBadge {...props} />)

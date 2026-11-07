@@ -10,8 +10,9 @@ it('keeps the Electron preload assignable to the product consumer', () => {
 })
 
 it('records visible ordinary-update states without authorizing downloads or installation', async () => {
-  const phases: DesktopUpdateState['phase'][] = ['idle', 'available', 'downloading', 'verifying', 'ready', 'installing', 'error']
-  const states = phases.map(phase => presentDesktopUpdate({ phase, version: '0.1.5-rc.2', percent: 58 }))
+  const phases: DesktopUpdateState['phase'][] = ['idle', 'adaptation-required', 'available', 'downloading', 'verifying', 'ready', 'installing', 'error']
+  const states = [presentDesktopUpdate({ phase: 'unavailable' }),
+    ...phases.map(phase => presentDesktopUpdate({ phase, version: '0.1.5-rc.2', percent: 58 }))]
   await expect(JSON.stringify(states, null, 2) + '\n').toMatchFileSnapshot('./expected/update-status-zh.json')
 })
 
@@ -32,6 +33,7 @@ it('keeps raw diagnostics out of error tooltips in both locales', () => {
     expect(desktopUpdateErrorSummary({ phase: 'error', failedOperation: 'install', preparationFailure: 'stop-failed',
       message: 'translated or changed copy', technicalDetails: 'private diagnostic' }, messages)).toBe(messages.updateStopFailed)
     for (const [preparationFailure, expected] of [
+      ['fullscreen-timeout', messages.updateFullscreenTimeout],
       ['tasks-changed', messages.updateTasksChanged], ['tasks-unavailable', messages.updateTasksUnavailable],
     ] as const) {
       expect(desktopUpdateErrorSummary({ phase: 'error', failedOperation: 'install', preparationFailure,

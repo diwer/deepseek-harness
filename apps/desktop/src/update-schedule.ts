@@ -54,10 +54,12 @@ export class DesktopUpdateSchedule {
    * Start immediately when due; explicit requests bypass the deadline and share in-flight work.
    * @param manual - Whether a check failure must be visible, including when joining an automatic request.
    * @param force - Whether policy arrival or explicit intent bypasses the automatic deadline.
-   * @returns Current state when not due, otherwise the coordinator result. Disposal rejects new work.
+   * @returns Current state when unavailable or not due, otherwise the coordinator result.
+   * An unavailable source never arms a polling timer. Disposal rejects new work.
    */
   async check(manual = false, force = manual): Promise<DesktopUpdateState> {
     if (this.disposed) throw new Error('desktop update: polling is disposed')
+    if (this.updates.state.phase === 'unavailable') return this.updates.state
     if (this.pending !== undefined && !manual) return this.pending
     if (!force && this.now() < this.nextCheck) return this.updates.state
     clearTimeout(this.timer)

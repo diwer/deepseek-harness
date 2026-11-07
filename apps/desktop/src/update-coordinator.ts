@@ -8,6 +8,7 @@ import { gt, valid } from 'semver'
 import type { DesktopUpdateState } from './ipc.ts'
 import { DesktopUpdateHttpExecutor } from './update-http-executor.ts'
 import { DesktopUpdatePreparationError } from './update-error.ts'
+import type { DesktopOfficialUpdateTracking } from './update-channel.ts'
 
 const { autoUpdater } = electronUpdater
 
@@ -47,16 +48,19 @@ export class DesktopUpdateCoordinator {
    * @param currentVersion - Actual installed application version.
    * @param channel - Installed package channel; omitted test/local callers retain nightly.
    * @param downloadResult - Once per completed download attempt, including platform preparation failures.
+   * @param officialTracking - Custom-build comparison metadata; downloads and installation remain forbidden.
    */
   constructor(
     private readonly publish: (state: DesktopUpdateState) => DesktopUpdateState,
     private readonly beforeRestart: () => Promise<boolean>,
     private readonly updater: AppUpdater = autoUpdater,
-    private readonly enabled: () => boolean = () => app.isPackaged && existsSync(join(process.resourcesPath, 'app-update.yml')),
+    enabled: () => boolean = () => app.isPackaged && existsSync(join(process.resourcesPath, 'app-update.yml')),
     private readonly currentVersion: () => string = () => app.getVersion(),
     private readonly downloadResult?: (success: boolean, reason?: string) => void,
     private readonly channel: 'nightly' | 'latest' = 'nightly',
+    private readonly officialTracking?: DesktopOfficialUpdateTracking,
   ) {
+    this.current = { phase: officialTracking !== undefined || enabled() ? 'idle' : 'unavailable' }
     if (updater === autoUpdater) {
       // electron-updater omits this internal transport property from its public declarations.
       // Real-Electron qualification exercises the pinned dependency integration.
@@ -72,6 +76,7 @@ export class DesktopUpdateCoordinator {
     this.updater.allowPrerelease = channel === 'nightly'
     // Selecting a channel can enable downgrade in electron-updater.
     this.updater.allowDowngrade = false
+    if (officialTracking !== undefined) this.updater.setFeedURL({ provider: 'generic', url: officialTracking.feedUrl, channel: 'nightly' })
     this.updater.on('download-progress', this.onProgress)
     this.updater.on('update-downloaded', this.onDownloaded)
     this.updater.on('error', this.onError)
@@ -83,11 +88,12 @@ export class DesktopUpdateCoordinator {
   /**
    * Check metadata without downloading, joining any current check.
    * @param manual - Whether a failed check must remain visible in the status indicator.
-   * @returns The check result, including a silent automatic failure when applicable.
+   * @returns The check result, an unavailable source, or a silent automatic failure.
+   * Packages without an update source never query the feed or publish retry failures.
    */
   async check(manual = false): Promise<DesktopUpdateState> {
     this.assertLive()
-    if (this.downloadOperation !== undefined || this.installOperation !== undefined || this.downloaded) return this.current
+    if (this.current.phase === 'unavailable' || this.downloadOperation !== undefined || this.installOperation !== undefined || this.downloaded) return this.current
     if (!manual && this.current.phase === 'error' && this.current.failedOperation === 'download') return this.current
     this.checkOperation ??= Promise.resolve().then(() => this.doCheck())
       .finally(() => { this.checkOperation = undefined })
@@ -99,9 +105,11 @@ export class DesktopUpdateCoordinator {
   /**
    * @param version - Version shown in the user's download confirmation.
    * @returns Download readiness or failure, without authorizing installation.
+   * @throws Custom builds reject the request before downloading any artifact.
    */
   async download(version: string): Promise<DesktopUpdateState> {
     this.assertLive()
+    if (this.officialTracking !== undefined) throw new Error('desktop update: custom builds require repository adaptation; download refused')
     if (this.downloaded || this.installOperation !== undefined) return this.current
     this.downloadOperation ??= Promise.resolve().then(async () => {
       await this.checkOperation
@@ -127,9 +135,11 @@ export class DesktopUpdateCoordinator {
    * Install a prepared target after a separate user confirmation.
    * @param version - Exact version displayed in the confirmation, never a renderer-selected URL.
    * @returns Installation handoff or a recoverable preparation error.
+   * @throws Custom builds reject the request before task teardown or installation.
    */
   async install(version: string): Promise<DesktopUpdateState> {
     this.assertLive()
+    if (this.officialTracking !== undefined) throw new Error('desktop update: custom builds require repository adaptation; installation refused')
     if (!this.downloaded || this.downloadOperation !== undefined || version !== this.candidate) throw new Error('desktop update: confirmed target is not ready')
     this.installOperation ??= Promise.resolve().then(async () => {
       this.setState({ phase: 'installing', version })
@@ -184,12 +194,15 @@ export class DesktopUpdateCoordinator {
   private async doCheck(): Promise<DesktopUpdateState> {
     try {
       this.assertLive()
-      if (!this.enabled()) throw new Error('desktop update: this application has no packaged update source')
       const result = await this.updater.checkForUpdates()
       if (result === null) throw new Error('desktop update: no check result was returned')
       const version = result.updateInfo.version
       if (valid(version) === null) throw new Error('desktop update: feed version is invalid')
       if (this.channel === 'latest' && version.includes('-')) throw new Error('desktop update: latest feed contains a prerelease')
+      if (this.officialTracking !== undefined) {
+        this.candidate = undefined
+        return this.setState({ phase: gt(version, this.officialTracking.upstreamVersion) ? 'adaptation-required' : 'idle', version })
+      }
       this.candidate = result.isUpdateAvailable && gt(version, this.currentVersion()) ? version : undefined
       return this.setState(this.candidate === undefined ? { phase: 'idle' } : { phase: 'available', version })
     } catch (error) {

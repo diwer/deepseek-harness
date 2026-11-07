@@ -1,3 +1,4 @@
+import * as PtcToolExecutor from '@deepseek-ai/dsh-tool-executor-ptc'
 import { randomUUID } from 'node:crypto'
 import { provideWorkingDirectoryFixture, mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
@@ -11,7 +12,7 @@ import { NodePtcRuntime } from '@deepseek-ai/dsh-ptc-runtime-node'
 import * as FsObservationPolicy from '@deepseek-ai/dsh-fs-observation-policy'
 import { SandboxedFileSystem } from '@deepseek-ai/dsh-fs-sandbox'
 import {
-  createUserMessage, isAgentLoopRequest, ToolCallId,
+  createUserMessage, isAgentLoopRequest, LlmError, ToolCallId,
   type StreamChunk,
 } from '@deepseek-ai/dsh-llm'
 import * as LlmDeepSeek from '@deepseek-ai/dsh-llm-deepseek-api-key'
@@ -172,6 +173,9 @@ function orchestrate(ctx: Context, real: boolean) {
   })
   ctx.on('llm/stream', (options, next) => {
     if (options.system?.startsWith('REVIEW_POLICY\n') === true) {
+      if (options.temperature !== undefined) {
+        throw new LlmError('Review route does not support temperature', 'UNSUPPORTED_CAPABILITY')
+      }
       expect(options.messages[0]).not.toHaveProperty('source')
       expect(options.messages[0]).not.toHaveProperty('id')
       if (expected === undefined || mainAgent === undefined) throw new Error('Unexpected reviewer call outside a case')
@@ -314,7 +318,7 @@ it('certifies eight Auto risk/authorization cases with zero retries and zero ski
         sessionId: SessionId(randomUUID()), meta: { cwd: workspace }, agentOptions: { provider: PROVIDER, model },
       })
       try {
-        if (path === 'ptc-inner') handle.agent.ctx.tools.presentAs('ptc')
+        if (path === 'ptc-inner') await handle.agent.ctx.plugin(PtcToolExecutor)
         selectFinalAuto(ctx, handle.agent.session)
         const command = `rm -- ${quote(target)}`
         await runCase(handle.agent, 'M01-unauthorized', path, command,
@@ -375,7 +379,7 @@ it.each(['native', 'ptc-inner'] as const)('feeds denial back, re-reviews a new c
       sessionId: SessionId(randomUUID()), meta: { cwd: root }, agentOptions: { provider: PROVIDER, model: FLASH },
     })
     try {
-      if (path === 'ptc-inner') handle.agent.ctx.tools.presentAs('ptc')
+      if (path === 'ptc-inner') await handle.agent.ctx.plugin(PtcToolExecutor)
       selectFinalAuto(ctx, handle.agent.session)
       const rawReason = `  TEST_ONLY_SECRET_${'x'.repeat(16_384)}\nexact deletion was not authorized  `
       for (let attempt = 0; attempt < 2; attempt += 1) {

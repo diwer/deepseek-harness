@@ -7,11 +7,13 @@ Verify your work by running the code or tests. Keep answers brief and factual.
 
 `run_code` is the only tool you can call directly — a tool call naming any other tool fails. Reach every tool the SDK declares below from inside the program.
 
-Use the read tool — not shell commands like cat, sed, head, or tail — to inspect text files. Use offset and limit to read a line range or continue a large file.
+Use the read tool — not shell commands like cat — to inspect text files. Use offset and limit to continue reading large files.
 
-Read an existing file before overwriting it with write (the default fs-observation-policy requires it) and prefer edit for targeted changes.
+Read an existing file before overwriting it with write and prefer edit for targeted changes.
 
-Read a file before editing it (the default fs-observation-policy requires it), unless you just created or edited it in this session.
+Read a file before editing it unless you just created or edited it in this session.
+
+Prefer apply_patch over separate edit calls for changes across files or separated regions. Give every hunk enough surrounding context lines to match one place in the current file. The whole patch is checked first (syntax, hunk matching, missing files) and a rejected patch changes nothing; once applying starts, operations run in order, stop at the first failure, and are not rolled back, so re-read affected files before retrying when needed.
 
 Use the glob tool — not shell find — to discover files by path pattern.
 
@@ -31,14 +33,14 @@ Start independent delegations with `subagent` or `subagent_fork` together in one
 
 ## Writing code for run_code
 
-`run_code` takes two required arguments: `description`, a short summary of what the program does, and `code`, the program to execute. The declarations below are SDK bindings for this program. A declaration does not make its name a directly callable tool; only names supplied as separate tool schemas may be called directly.
+`run_code` takes two required arguments: `code`, the body of an async TypeScript function (erasable syntax only — no `enum` or namespaces; type annotations are advisory, the code runs type-stripped), and `description`, a short summary of what the program does. The declarations below are SDK bindings for this program. A declaration does not make its name a directly callable tool; only names supplied as separate tool schemas may be called directly.
 
 Inside the program:
 
 - Call tools as `await tools.name(args)` — quoted access for exotic names: `tools["my-tool"](args)`. Every call resolves to the tool's typed canonical JSON value. Tool arguments must be lossless JSON.
 - A FAILED tool call rejects with `ToolCallError`, whose `toolName` identifies the failed tool and whose `message` is human-readable — `try/catch` it to handle and continue.
 - Independent read-only calls MAY overlap under `Promise.all` (safe calls run concurrently; mutating calls run alone, in submission order). Sequence dependent work with `await`.
-- Only values emitted as program output enter the conversation. A successful tool result containing an image is attached after the run so you can inspect it on the next step; every other intermediate result stays out of the conversation, so extract just what you need.
+- Emit results with `return` and/or `console.log(...)`. Only what you print or return is program output. A successful tool result containing an image is attached after the run so you can inspect it on the next step; every other intermediate result stays out of the conversation, so extract just what you need.
 
 Program-only SDK bindings:
 
@@ -46,6 +48,15 @@ Program-only SDK bindings:
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
 
 interface ToolArgsMap {
+  /** Create, update, delete, or move UTF-8 text files with one Codex-style patch; prefer it over multiple edit calls when a change spans several files or separated regions. */
+  apply_patch: {
+    /** Codex patch text: start with *** Begin Patch and end with *** End Patch. Use *** Add File: path with + lines; *** Update File: path, optionally followed by *** Move to: path, with @@ or @@ context and space-prefixed context, + added, or - removed lines; *** End of File anchors the last hunk to the file end. Use *** Delete File: path to delete. Paths are relative to the Session working directory. */
+    input: string;
+    /** The narrowest wider sandbox mode for a one-shot retry of the exact operation the sandbox just denied; the retry asks the user for approval. */
+    sandbox_permissions?: "workspace-write" | "danger-full-access";
+    /** Required with sandbox_permissions: one sentence for the user explaining why this exact file operation needs the wider access. Use the language of the user’s current request. */
+    justification?: string;
+  } & Record<string, JsonValue>;
   /** Create a persisted goal that keeps this session working across automatic continuation rounds. Use it when the direct human request is a long-running objective, even if the user did not say "goal"; not for single-turn work. */
   create_goal: {
     /** The concrete completion objective inferred from the direct human request. */
@@ -67,11 +78,6 @@ interface ToolArgsMap {
     sandbox_permissions?: "workspace-write" | "danger-full-access";
     /** Required with sandbox_permissions: one sentence for the user explaining why this exact file operation needs the wider access. Use the language of the user’s current request. */
     justification?: string;
-  } & Record<string, JsonValue>;
-  /** Use only in plan mode. Present your plan for the user's review and, on approval, leave plan mode. The user may approve (carry out the plan from your next step) or keep planning — their feedback comes back in the tool result; revise and present again. */
-  exit_plan_mode: {
-    /** The complete plan, as markdown, starting with a # heading that names it. */
-    plan: string;
   } & Record<string, JsonValue>;
   /** Read the current session goal, including the id and revision that update_goal requires. */
   get_goal: Record<string, JsonValue>;
@@ -246,6 +252,27 @@ interface ToolArgsMap {
 }
 
 interface ToolOutputMap {
+  apply_patch: {
+    phase: "commit";
+    cancelled: boolean;
+    operations: ({
+      index: number;
+      kind: "add" | "update" | "delete" | "move";
+      path: string;
+      destination?: string;
+      patchLine: number;
+      status: "completed" | "failed" | "unknown" | "skipped";
+      code?: string;
+      message?: string;
+      hunkLine?: number;
+      changes?: ({
+        path: string;
+        before: string | null;
+        after: string | null;
+      })[];
+    })[];
+    affectedPaths: string[];
+  };
   create_goal: {
     goal: null;
   } | {
@@ -268,9 +295,6 @@ interface ToolOutputMap {
     path: string;
     before: string;
     after: string;
-  };
-  exit_plan_mode: {
-    approved: boolean;
   };
   get_goal: {
     goal: null;
@@ -448,6 +472,7 @@ interface ToolOutputMap {
       url: string;
       title?: string;
       snippet?: string;
+      summary?: string;
       publishedAt?: string;
     }[];
     truncated: boolean;

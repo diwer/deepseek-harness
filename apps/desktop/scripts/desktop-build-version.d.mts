@@ -13,7 +13,7 @@ export function validateDesktopBuildVersion(buildVersion: string, productVersion
  * Resolve the version a build publishes.
  * @param env - Packaging or upload environment.
  * @param productVersion - Version the manifests declare.
- * @returns The build version when one is present, otherwise the product version.
+ * @returns The build version when present, otherwise the product version. Only unsigned builds accept extension versions.
  */
 export function resolveDesktopBuildVersion(env: NodeJS.ProcessEnv, productVersion: string): string
 
