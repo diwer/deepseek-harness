@@ -50,13 +50,16 @@ function fixture() {
 
 const available = { phase: 'available', version: '1.0.1' } as const
 
-it('shows official updates as repository adaptation rather than a download action', async () => {
+it.each([
+  [{ phase: 'adaptation-required', version: '0.2.1-rc.2' }, '官方版本：0.2.1-rc.2\n这是自定义版本，需要在代码仓库适配更新'],
+  [{ phase: 'adaptation-required' }, '官方版本：\n这是自定义版本，需要在代码仓库适配更新'],
+] as const)('shows official updates as repository adaptation rather than a download action (%#)', async (state, detail) => {
   const f = fixture()
   try {
-    await act(async () => { f.status.resolve({ phase: 'adaptation-required', version: '0.2.1-rc.2' }) })
+    await act(async () => { f.status.resolve(state) })
     const button = screen.getByRole('button', { name: '官方新版' })
     fireEvent.focus(button)
-    expect((await screen.findByRole('tooltip')).textContent).toContain('代码仓库适配更新')
+    expect((await screen.findByRole('tooltip')).textContent).toBe(detail)
     fireEvent.click(button)
     await act(async () => {})
     expect(f.open).toHaveBeenCalledOnce()
