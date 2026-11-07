@@ -1160,7 +1160,8 @@ describe('Personal repository CI', () => {
 })
 
 describe('DeepSeek e2e workflow', () => {
-  it.each([false, true])('reports credential availability without exposing its value (configured=%s)', (configured) => {
+  // This step runs under hosted Ubuntu Bash; native Windows does not provide that interpreter.
+  it.skipIf(process.platform === 'win32').each([false, true])('reports credential availability without exposing its value (configured=%s)', (configured) => {
     const job = workflowJob(loadWorkflow('.github/workflows/e2e.yml'), 'credentials')
     if (!Array.isArray(job.steps)) throw new TypeError('Credential availability job must define steps')
     const step = job.steps.filter(isRecord).find(candidate => candidate.id === 'check')
