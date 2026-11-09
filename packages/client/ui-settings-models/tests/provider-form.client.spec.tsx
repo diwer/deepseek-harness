@@ -227,10 +227,10 @@ async function mountSection(options: Parameters<typeof scriptedFace>[0] = {}) {
 it('offers unconfigured CommandCode in the built-in provider dropdown without writing settings', async () => {
   const { mutate, set } = await mountSection({ providers: {}, catalog: ['openai', 'commandcode'] })
   fireEvent.click(screen.getByRole('button', { name: en.add }))
-  const select = screen.getByLabelText(en.provider) as HTMLSelectElement
-  expect(within(select).getByRole('option', { name: 'CommandCode' })).toBeTruthy()
-  fireEvent.change(select, { target: { value: 'commandcode' } })
-  expect(select.value).toBe('commandcode')
+  const picker = screen.getByRole('combobox', { name: en.provider }) as HTMLInputElement
+  fireEvent.focus(picker)
+  fireEvent.click(screen.getByRole('option', { name: 'CommandCode' }))
+  expect(picker.value).toBe('CommandCode')
   expect(screen.getByLabelText(en.keyInput)).toBeTruthy()
   expect(mutate).not.toHaveBeenCalled()
   expect(set).not.toHaveBeenCalled()
@@ -1814,41 +1814,84 @@ describe('API key field', () => {
   })
 })
 
-it('filters the provider dropdown by name or route id without selecting or saving while typing', async () => {
-  const { mutate, set } = await mountSection({ providers: {}, catalog: ['openai', 'commandcode'] })
+it('shows matching providers directly below the single editable combobox as the user types', async () => {
+  const { mutate, set } = await mountSection({ providers: {}, catalog: ['openai-codex', 'opencode', 'commandcode'] })
   fireEvent.click(screen.getByRole('button', { name: en.add }))
-  const search = screen.getByRole('searchbox', { name: en.searchProviders })
-  const select = screen.getByLabelText(en.provider) as HTMLSelectElement
-  fireEvent.change(search, { target: { value: '  CoMmAnD  ' } })
-  expect(within(select).queryByRole('option', { name: 'openai' })).toBeNull()
-  expect(within(select).getByRole('option', { name: 'CommandCode' })).toBeTruthy()
-  expect(select.value).toBe('')
+  const picker = screen.getByRole('combobox', { name: en.provider }) as HTMLInputElement
+  expect(screen.queryByRole('searchbox', { name: en.searchProviders })).toBeNull()
+  fireEvent.focus(picker)
+  fireEvent.change(picker, { target: { value: '  OpEn  ' } })
+  expect(screen.getByRole('listbox', { name: en.provider })).toBeTruthy()
+  expect(screen.getAllByRole('option').map(option => option.textContent)).toEqual(['openai-codex', 'opencode'])
+  expect(picker.getAttribute('aria-expanded')).toBe('true')
   expect(buttonNamed(en.apply).disabled).toBe(true)
   expect(mutate).not.toHaveBeenCalled()
   expect(set).not.toHaveBeenCalled()
-  fireEvent.change(select, { target: { value: 'commandcode' } })
-  expect(select.value).toBe('commandcode')
-  fireEvent.change(search, { target: { value: 'commandcode' } })
-  expect(select.value).toBe('commandcode')
+  fireEvent.click(screen.getByRole('option', { name: 'opencode' }))
+  expect(picker.value).toBe('opencode')
+  expect(picker.getAttribute('aria-expanded')).toBe('false')
+  expect(screen.getByLabelText<HTMLInputElement>(en.keyInput).disabled).toBe(false)
 })
 
-it('keeps the key draft through empty search results and restores the full list when cleared', async () => {
+it('accepts a non-contiguous fuzzy match with Enter without submitting the provider form', async () => {
+  const { mutate, set } = await mountSection({ providers: {}, catalog: ['openai', 'commandcode'] })
+  fireEvent.click(screen.getByRole('button', { name: en.add }))
+  const picker = screen.getByRole('combobox', { name: en.provider }) as HTMLInputElement
+  fireEvent.focus(picker)
+  fireEvent.change(picker, { target: { value: 'cmd' } })
+  expect(screen.getAllByRole('option').map(option => option.textContent)).toEqual(['CommandCode'])
+  fireEvent.keyDown(picker, { key: 'Enter', isComposing: true })
+  expect(picker.value).toBe('cmd')
+  fireEvent.keyDown(picker, { key: 'Enter' })
+  expect(picker.value).toBe('CommandCode')
+  expect(screen.queryByRole('listbox')).toBeNull()
+  expect(mutate).not.toHaveBeenCalled()
+  expect(set).not.toHaveBeenCalled()
+})
+
+it('preserves the key draft when a provider search has no match and Escape cancels it', async () => {
   const { mutate, set } = await mountSection({ providers: {}, catalog: ['openai', 'commandcode'] })
   fireEvent.click(screen.getByRole('button', { name: en.add }))
   const key = screen.getByLabelText(en.keyInput) as HTMLInputElement
   fireEvent.change(key, { target: { value: 'test-draft-key' } })
-  const search = screen.getByRole('searchbox', { name: en.searchProviders })
-  const select = screen.getByLabelText(en.provider) as HTMLSelectElement
-  fireEvent.change(search, { target: { value: 'no-such-provider' } })
-  expect(select.disabled).toBe(true)
+  const picker = screen.getByRole('combobox', { name: en.provider }) as HTMLInputElement
+  fireEvent.focus(picker)
+  fireEvent.change(picker, { target: { value: 'zzzzzz' } })
+  expect(screen.getByRole('status').textContent).toBe(en.noProvidersFound)
   expect(buttonNamed(en.apply).disabled).toBe(true)
-  expect(within(select).getByRole('option', { name: en.noProvidersFound })).toBeTruthy()
+  fireEvent.keyDown(picker, { key: 'Enter' })
+  expect(screen.getByRole('listbox')).toBeTruthy()
   expect(key.value).toBe('test-draft-key')
-  fireEvent.change(search, { target: { value: '' } })
-  expect(select.disabled).toBe(false)
-  expect(select.value).toBe('openai')
-  expect(within(select).getByRole('option', { name: 'CommandCode' })).toBeTruthy()
+  fireEvent.keyDown(picker, { key: 'Escape' })
+  expect(picker.value).toBe('openai')
+  expect(screen.queryByRole('listbox')).toBeNull()
+  expect(key.disabled).toBe(false)
   expect(key.value).toBe('test-draft-key')
+  fireEvent.focus(picker)
+  expect(screen.getAllByRole('option')).toHaveLength(2)
+  fireEvent.pointerDown(document.body)
+  expect(screen.queryByRole('listbox')).toBeNull()
   expect(mutate).not.toHaveBeenCalled()
   expect(set).not.toHaveBeenCalled()
+})
+
+it('walks the visible provider suggestions with arrow keys while input retains focus', async () => {
+  const descriptor = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView')
+  Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() })
+  try {
+    await mountSection({ providers: {}, catalog: ['openai-codex', 'opencode', 'commandcode'] })
+    fireEvent.click(screen.getByRole('button', { name: en.add }))
+    const picker = screen.getByRole('combobox', { name: en.provider }) as HTMLInputElement
+    picker.focus()
+    fireEvent.change(picker, { target: { value: 'open' } })
+    const first = picker.getAttribute('aria-activedescendant')
+    fireEvent.keyDown(picker, { key: 'ArrowDown' })
+    expect(picker.getAttribute('aria-activedescendant')).not.toBe(first)
+    fireEvent.keyDown(picker, { key: 'Enter' })
+    expect(picker.value).toBe('opencode')
+    expect(document.activeElement).toBe(picker)
+  } finally {
+    if (descriptor === undefined) Reflect.deleteProperty(Element.prototype, 'scrollIntoView')
+    else Object.defineProperty(Element.prototype, 'scrollIntoView', descriptor)
+  }
 })

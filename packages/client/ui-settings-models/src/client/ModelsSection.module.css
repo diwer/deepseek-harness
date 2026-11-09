@@ -783,8 +783,27 @@ select.input {
   cursor: pointer;
 }
 
-.providerSearch {
+.providerPicker {
+  position: relative;
   max-width: 240px;
+}
+
+.providerSearch {
+  padding-right: 32px;
+}
+
+.providerChevron {
+  position: absolute;
+  right: 10px;
+  top: 8px;
+  width: 16px;
+  height: 16px;
+  color: var(--dsw-alias-label-caption);
+  pointer-events: none;
+}
+
+@media (pointer: coarse) {
+  .providerSearch { font-size: 16px; }
 }
 
 .input:focus {
@@ -956,4 +975,50 @@ select.input {
   font-size: 13px;
   line-height: 20px;
   text-align: center;
+}
+
+.providerSuggestions {
+  box-sizing: border-box;
+  position: fixed;
+  z-index: 1100;
+  max-width: min(360px, var(--dsh-anchored-max-width, 100vw));
+  max-height: min(240px, var(--dsh-anchored-max-height, 100vh));
+  overflow-y: auto;
+  padding: 4px;
+  border: 0;
+  --dsw-elevation-stroke-color: var(--dsw-alias-border-l1);
+  box-shadow: var(--dsw-elevation-prominent);
+  color: var(--dsw-alias-label-primary);
+  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
+  --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
+}
+
+.providerOption {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--dsw-radius-sm);
+  font: inherit;
+  font-size: 14px;
+  line-height: 22px;
+  text-align: start;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.providerOption[data-active='true'] {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.providerEmpty {
+  padding: 6px 10px;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--dsw-alias-label-secondary);
 }
