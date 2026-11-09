@@ -1813,3 +1813,40 @@ describe('API key field', () => {
     expect(screen.queryByRole('textbox', { name: en.customRoute })).toBeNull()
   })
 })
+
+it('filters the provider dropdown by name or route id without selecting or saving while typing', async () => {
+  const { mutate, set } = await mountSection({ providers: {}, catalog: ['openai', 'commandcode'] })
+  fireEvent.click(screen.getByRole('button', { name: en.add }))
+  const search = screen.getByRole('searchbox', { name: en.searchProviders })
+  const select = screen.getByLabelText(en.provider) as HTMLSelectElement
+  fireEvent.change(search, { target: { value: '  CoMmAnD  ' } })
+  expect(within(select).queryByRole('option', { name: 'openai' })).toBeNull()
+  expect(within(select).getByRole('option', { name: 'CommandCode' })).toBeTruthy()
+  expect(select.value).toBe('')
+  expect(mutate).not.toHaveBeenCalled()
+  expect(set).not.toHaveBeenCalled()
+  fireEvent.change(select, { target: { value: 'commandcode' } })
+  expect(select.value).toBe('commandcode')
+  fireEvent.change(search, { target: { value: 'commandcode' } })
+  expect(select.value).toBe('commandcode')
+})
+
+it('keeps the key draft through empty search results and restores the full list when cleared', async () => {
+  const { mutate, set } = await mountSection({ providers: {}, catalog: ['openai', 'commandcode'] })
+  fireEvent.click(screen.getByRole('button', { name: en.add }))
+  const key = screen.getByLabelText(en.keyInput) as HTMLInputElement
+  fireEvent.change(key, { target: { value: 'test-draft-key' } })
+  const search = screen.getByRole('searchbox', { name: en.searchProviders })
+  const select = screen.getByLabelText(en.provider) as HTMLSelectElement
+  fireEvent.change(search, { target: { value: 'no-such-provider' } })
+  expect(select.disabled).toBe(true)
+  expect(within(select).getByRole('option', { name: en.noProvidersFound })).toBeTruthy()
+  expect(key.value).toBe('test-draft-key')
+  fireEvent.change(search, { target: { value: '' } })
+  expect(select.disabled).toBe(false)
+  expect(select.value).toBe('openai')
+  expect(within(select).getByRole('option', { name: 'CommandCode' })).toBeTruthy()
+  expect(key.value).toBe('test-draft-key')
+  expect(mutate).not.toHaveBeenCalled()
+  expect(set).not.toHaveBeenCalled()
+})

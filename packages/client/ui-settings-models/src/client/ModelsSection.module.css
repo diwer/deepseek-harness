@@ -783,6 +783,10 @@ select.input {
   cursor: pointer;
 }
 
+.providerSearch {
+  max-width: 240px;
+}
+
 .input:focus {
   outline: none;
   border-color: var(--dsw-alias-state-business-primary);

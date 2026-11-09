@@ -255,6 +255,7 @@ function Loaded({ injected, renderSlot }: { injected: ModelsSectionFace; renderS
   if (state.status === 'error' && hasReadySnapshot) setHasReadySnapshot(false)
   const [editing, setEditing] = useState<EditorTarget | undefined>(undefined)
   const [addOpen, setAddOpen] = useState(false)
+  const [providerQuery, setProviderQuery] = useState('')
   const [addMode, setAddMode] = useState<AddMode>('catalog')
   /** The modes shown since the add card opened; each keeps its panel mounted. */
   const [visited, setVisited] = useState<ReadonlySet<AddMode>>(() => new Set())
@@ -286,6 +287,7 @@ function Loaded({ injected, renderSlot }: { injected: ModelsSectionFace; renderS
   const closeAdd = (): void => {
     setEditing(undefined)
     setAddOpen(false)
+    setProviderQuery('')
     setCatalogBusy(false)
     setCustomBusy(false)
   }
@@ -371,6 +373,9 @@ function Loaded({ injected, renderSlot }: { injected: ModelsSectionFace; renderS
     const namespace = state.namespaces.get(row.entry.settingsNs)
     return namespace === undefined || row.configured ? [] : [{ row, namespace }]
   })
+  const normalizedProviderQuery = providerQuery.trim().toLowerCase()
+  const matchingProviders = addable.filter(({ row }) =>
+    `${row.entry.displayName} ${row.entry.provider}`.toLowerCase().includes(normalizedProviderQuery))
   // Hand-declared routes live in the pi-ai namespace, which is also the only
   // one whose schema names the protocols one may speak; without it mounted
   // there is nothing to declare and the mode is not offered.
@@ -618,11 +623,20 @@ function Loaded({ injected, renderSlot }: { injected: ModelsSectionFace; renderS
                   >
                     <div className={styles['field']}>
                       <span className={styles['fieldLabel']}>{t('provider')}</span>
+                      <input
+                        type="search"
+                        className={`${styles['input']} ${styles['providerSearch']}`}
+                        aria-label={t('searchProviders')}
+                        placeholder={t('searchProviders')}
+                        value={providerQuery}
+                        disabled={catalogBusy}
+                        onChange={(event) => { setProviderQuery(event.target.value) }}
+                      />
                       <select
                         className={`${styles['input']} ${styles['selectInput']}`}
-                        value={draft.target.provider}
+                        value={matchingProviders.some(({ row }) => row.entry.provider === draft.target.provider) ? draft.target.provider : ''}
                         aria-label={t('provider')}
-                        disabled={catalogBusy}
+                        disabled={catalogBusy || matchingProviders.length === 0}
                         onChange={(event) => {
                           const picked = addable.find(candidate => candidate.row.entry.provider === event.target.value)
                           /* v8 ignore next -- the select only lists addable rows */
@@ -630,7 +644,10 @@ function Loaded({ injected, renderSlot }: { injected: ModelsSectionFace; renderS
                           setEditing(targetOf(picked.row))
                         }}
                       >
-                        {addable.map(({ row }) => (
+                        {!matchingProviders.some(({ row }) => row.entry.provider === draft.target.provider)
+                          ? <option value="" disabled>{t(matchingProviders.length === 0 ? 'noProvidersFound' : 'provider')}</option>
+                          : null}
+                        {matchingProviders.map(({ row }) => (
                           <option key={row.entry.provider} value={row.entry.provider}>{row.entry.displayName}</option>
                         ))}
                       </select>
