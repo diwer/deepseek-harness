@@ -1823,6 +1823,7 @@ it('filters the provider dropdown by name or route id without selecting or savin
   expect(within(select).queryByRole('option', { name: 'openai' })).toBeNull()
   expect(within(select).getByRole('option', { name: 'CommandCode' })).toBeTruthy()
   expect(select.value).toBe('')
+  expect(buttonNamed(en.apply).disabled).toBe(true)
   expect(mutate).not.toHaveBeenCalled()
   expect(set).not.toHaveBeenCalled()
   fireEvent.change(select, { target: { value: 'commandcode' } })
@@ -1840,6 +1841,7 @@ it('keeps the key draft through empty search results and restores the full list 
   const select = screen.getByLabelText(en.provider) as HTMLSelectElement
   fireEvent.change(search, { target: { value: 'no-such-provider' } })
   expect(select.disabled).toBe(true)
+  expect(buttonNamed(en.apply).disabled).toBe(true)
   expect(within(select).getByRole('option', { name: en.noProvidersFound })).toBeTruthy()
   expect(key.value).toBe('test-draft-key')
   fireEvent.change(search, { target: { value: '' } })

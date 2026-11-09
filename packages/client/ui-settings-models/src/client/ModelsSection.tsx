@@ -666,7 +666,7 @@ function Loaded({ injected, renderSlot }: { injected: ModelsSectionFace; renderS
                       {...draft.target.nativeAuth === undefined ? {} : { nativeAuth: draft.target.nativeAuth }}
                       {...addRow?.credentialChecks === undefined ? {} : { credentialChecks: addRow.credentialChecks }}
                       t={t}
-                      readOnly={!state.writable}
+                      readOnly={!state.writable || !matchingProviders.some(({ row }) => row.entry.provider === draft.target.provider)}
                       onClose={(changed) => { closeEditor(changed, draft.target) }}
                       onBusyChange={setCatalogBusy}
                     />
