@@ -174,7 +174,7 @@ function orchestrate(ctx: Context, real: boolean) {
   ctx.on('llm/stream', (options, next) => {
     if (options.system?.startsWith('REVIEW_POLICY\n') === true) {
       if (options.temperature !== undefined) {
-        throw new LlmError('Review route does not support temperature', 'UNSUPPORTED_CAPABILITY')
+        throw LlmError.fromFailure({ message: 'Review route does not support temperature', code: 'UNSUPPORTED_CAPABILITY' })
       }
       expect(options.messages[0]).not.toHaveProperty('source')
       expect(options.messages[0]).not.toHaveProperty('id')

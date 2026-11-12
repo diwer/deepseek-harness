@@ -2685,6 +2685,13 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         throws: ['When managed resource cleanup fails.'],
       },
       {
+        signature: 'registerEnvironmentInitializer(program: string): () => Promise<void>',
+        description: 'Register source evaluated once when each execution environment is created. Registration must precede the first run admission; only one initializer may be registered. Current bindings are installed before initialization. Its completion is discarded; logs, timeout, cancellation and output bounds share the first run. Initialization failure discards the environment without executing the user program or rolling back external effects.',
+        parameters: [{ name: 'program', description: 'Initialization source in the provider\'s language and format.' }],
+        returns: 'An idempotent async disposer that stops admission, cancels and drains admitted runs, and releases environments. Failed cleanup blocks execution until the disposer succeeds on retry. The caller owns this disposer.',
+        throws: ['When unsupported, registered twice, registered after admission, or invalid.'],
+      },
+      {
         signature: 'abstract resolve(request: PtcRunRequest): PtcRunSpec',
         description: 'Resolve supported options and provider defaults before execution.',
         parameters: [{ name: 'request', description: 'Program, bindings, cancellation and optional execution choices.' }],
@@ -6528,7 +6535,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'CuaSystemPermissionState',
-    declaration: 'export type CuaSystemPermissionState = {\n    platform: \'darwin\';\n    accessibility: boolean;\n    screenRecording: boolean;\n    helper: CuaPermissionProcess;\n    parent: CuaPermissionProcess;\n    launchApplication?: {\n        name: string;\n        path: string;\n        icon?: string | undefined;\n    } | undefined;\n} | {\n    platform: \'win32\';\n    sessionLocked: boolean | null;\n    captureAvailable: boolean;\n    elevated: boolean;\n    helper: CuaPermissionProcess;\n};',
+    declaration: 'export type CuaSystemPermissionState = {\n    platform: \'darwin\';\n    accessibility: boolean;\n    screenRecording: boolean;\n    helper: CuaPermissionProcess;\n    parent: CuaPermissionProcess;\n    launchApplication?: {\n        name: string;\n        path: string;\n        icon?: string | undefined;\n    } | undefined;\n} | {\n    platform: \'windows\';\n    sessionLocked: boolean | null;\n    captureAvailable: boolean;\n    elevated: boolean;\n    helper: Omit<CuaPermissionProcess, \'pid\'>;\n};',
   },
   {
     name: 'DailyInput',
@@ -8295,16 +8302,20 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type PtcJsonValue = null | boolean | number | string | PtcJsonValue[] | {\n    [key: string]: PtcJsonValue;\n};',
   },
   {
+    name: 'PtcOutput',
+    declaration: 'export type PtcOutput = {\n    type: \'text\';\n    text: string;\n} | {\n    type: \'image\';\n    attachment: ImageAttachmentRef;\n};',
+  },
+  {
     name: 'PtcRunFailure',
     declaration: 'export interface PtcRunFailure {\n    kind: \'exception\' | \'timeout\' | \'abort\' | \'worker-exit\' | \'invalid-output\' | \'output-limit\' | \'protocol\' | \'sandbox-unavailable\';\n    message: string;\n}',
   },
   {
     name: 'PtcRunRequest',
-    declaration: 'export interface PtcRunRequest {\n    program: string;\n    stateOwner?: object;\n    bindings: PtcBindingNamespace[];\n    cwd?: string;\n    timeoutMs?: number | null;\n    sandboxPolicy?: SandboxExecutionPolicy;\n    signal?: AbortSignal;\n}',
+    declaration: 'export interface PtcRunRequest {\n    program: string;\n    discardCompletion?: boolean;\n    stateOwner?: object;\n    bindings: PtcBindingNamespace[];\n    cwd?: string;\n    timeoutMs?: number | null;\n    sandboxPolicy?: SandboxExecutionPolicy;\n    signal?: AbortSignal;\n}',
   },
   {
     name: 'PtcRunResult',
-    declaration: 'export interface PtcRunResult {\n    sandbox?: PtcRunSandbox;\n    value?: PtcJsonValue;\n    logs: string[];\n    error?: PtcRunFailure;\n}',
+    declaration: 'export interface PtcRunResult {\n    sandbox?: PtcRunSandbox;\n    value?: PtcJsonValue;\n    output: PtcOutput[];\n    error?: PtcRunFailure;\n}',
   },
   {
     name: 'PtcRunSandbox',
