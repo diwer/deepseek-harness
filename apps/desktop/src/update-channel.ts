@@ -1,5 +1,6 @@
 /** Resolve the update channel sealed into the installed application manifest. */
 import { valid } from 'semver'
+import type { DesktopUpdatePreferences } from './settings-file.ts'
 
 /** Official release metadata checked by custom builds without permitting artifact installation. */
 export interface DesktopOfficialUpdateTracking {
@@ -8,7 +9,7 @@ export interface DesktopOfficialUpdateTracking {
 }
 
 /**
- * Resolve custom-build tracking sealed into the package, using the official production Nightly feed.
+ * Resolve custom-build tracking sealed into the package, using the official production feed.
  * @param manifest - Parsed application manifest; an absent upstream version disables tracking.
  * @param platform - Packaged operating system.
  * @param arch - Packaged processor architecture.
@@ -28,7 +29,7 @@ export function desktopOfficialUpdateTracking(
 }
 
 /** Installer-owned channel, independent of release version and upload environment. */
-export type DesktopUpdateChannel = 'nightly' | 'latest'
+export type DesktopUpdateChannel = DesktopUpdatePreferences['channel']
 
 /**
  * Read the packaged channel; older manifests retain their existing nightly behavior.
@@ -39,6 +40,6 @@ export function desktopUpdateChannel(manifest: unknown): DesktopUpdateChannel {
   if (typeof manifest !== 'object' || manifest === null) throw new Error('desktop update: invalid application manifest')
   if (!('dshDesktopUpdateChannel' in manifest)) return 'nightly'
   const channel = manifest.dshDesktopUpdateChannel
-  if (channel !== 'nightly' && channel !== 'latest') throw new Error('desktop update: invalid packaged channel')
+  if (channel !== 'nightly' && channel !== 'stable') throw new Error('desktop update: invalid packaged channel')
   return channel
 }
