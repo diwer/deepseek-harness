@@ -10,11 +10,14 @@ import { apply as hostApply } from '../src/index.ts'
 afterEach(() => {
   cleanup()
   vi.unstubAllEnvs()
+  vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 const HOLES = [
   'sidebar.brand.mark',
   'sidebar.brand.name',
+  'conversation.hero.frame',
 ] as const
 
 const HERO_HOLE = 'conversation.hero.brand.mark'
@@ -25,7 +28,10 @@ async function bench(declare = true) {
   const slots = ctx.get('slots') as SlotRegistry
   const declareHoles = () => slots.register({
     name: 'root',
-    children: Object.fromEntries([...HOLES, HERO_HOLE].map(name => [name, { kind: 'single', scope: 'root' }])),
+    children: Object.fromEntries([...HOLES, HERO_HOLE].map(name => [name, {
+      kind: name === 'conversation.hero.frame' ? 'hoc' : 'single',
+      scope: 'root',
+    }])),
   } as never, () => null)
   const disposeHoles = declare ? declareHoles() : undefined
   return { ctx, slots, declareHoles, disposeHoles }
@@ -76,6 +82,21 @@ describe('official browser-brand plugin', () => {
     const subject = await bench()
     await subject.ctx.plugin({ inject: [...inject], apply }).await()
     expect(subject.slots.entries(HERO_HOLE)).toHaveLength(0)
+  })
+
+  it('registers the whale as a self-contained frame layer without replacing the hero mark', async () => {
+    vi.stubEnv('DSH_CLIENT_BUILD_PROFILE', 'official')
+    const subject = await bench()
+    const fiber = subject.ctx.plugin({ inject: [...inject], apply })
+    try {
+      await fiber.await()
+      const [entry] = subject.slots.entries('conversation.hero.frame')
+      expect(entry?.options.id).toBe('pixel-whale')
+      expect(entry?.inject).toBeUndefined()
+      expect(subject.slots.entries(HERO_HOLE)).toHaveLength(0)
+    } finally {
+      await fiber.dispose()
+    }
   })
 
   it('renders the official name independently from both requested mark sizes', () => {

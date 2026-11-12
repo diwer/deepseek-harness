@@ -2,7 +2,7 @@
  * Resolve the version one build publishes, which is not always the version the
  * repository declares.
  *
- * Manual Desktop CI uses UTC date, workflow run number and attempt as
+ * Desktop CI version mode `build-number` uses UTC date, workflow run number and attempt as
  * `.YYYYMMDD.run.attempt`; these identify unpublished builds, not release sequences.
  * Unsigned alpha and RC extension builds use `<version>-<channel><number>-ming-<revision>` to identify
  * the equivalent official release separately from the source manifest version.

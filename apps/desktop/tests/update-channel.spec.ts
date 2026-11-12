@@ -19,8 +19,9 @@ it('uses the sealed upstream version and official feed for each custom-build tar
 
 it('reads the installed channel independently from the current version', () => {
   expect(desktopUpdateChannel({ version: '1.0.0', dshDesktopUpdateChannel: 'nightly' })).toBe('nightly')
-  expect(desktopUpdateChannel({ version: '1.0.0', dshDesktopUpdateChannel: 'latest' })).toBe('latest')
+  expect(desktopUpdateChannel({ version: '1.0.0', dshDesktopUpdateChannel: 'stable' })).toBe('stable')
   expect(desktopUpdateChannel({ version: '1.0.0' })).toBe('nightly')
+  expect(() => desktopUpdateChannel({ dshDesktopUpdateChannel: 'latest' })).toThrow(/channel/u)
   expect(() => desktopUpdateChannel({ dshDesktopUpdateChannel: 'beta' })).toThrow(/channel/u)
   expect(() => desktopUpdateChannel(null)).toThrow(/manifest/u)
 })

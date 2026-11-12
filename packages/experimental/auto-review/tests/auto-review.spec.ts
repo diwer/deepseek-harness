@@ -81,10 +81,10 @@ class RecordingAdapter extends LlmAdapter {
   async * stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
     this.requests.push(options)
     if (options.temperature !== undefined) {
-      throw new LlmError(
-        'The subscription route cannot honor GenerateOptions.temperature; remove that setting.',
-        'UNSUPPORTED_CAPABILITY',
-      )
+      throw LlmError.fromFailure({
+        message: 'The subscription route cannot honor GenerateOptions.temperature; remove that setting.',
+        code: 'UNSUPPORTED_CAPABILITY',
+      })
     }
     const response = this.script.shift()
     if (response === undefined) throw new Error('review adapter script exhausted')
@@ -1115,7 +1115,7 @@ describe('native review request', () => {
         { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } },
       ],
       async function* () {
-        throw new LlmError('review route unavailable', 'UNSUPPORTED_CAPABILITY')
+        throw LlmError.fromFailure({ message: 'review route unavailable', code: 'UNSUPPORTED_CAPABILITY' })
       },
     ]
     const { ctx, adapter } = await harness(invalidResponses)
