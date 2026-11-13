@@ -125,7 +125,9 @@ export function commandCodeProvider(): Provider {
   const models: Model<Api>[] = CATALOG.map(([id, name, contextWindow, api]) => ({
     id, name, contextWindow, api,
     provider: 'commandcode',
-    baseUrl: COMMAND_CODE_DEFAULTS.defaultBaseURL,
+    baseUrl: api === 'anthropic-messages'
+      ? COMMAND_CODE_DEFAULTS.defaultBaseURL.replace(/\/v1$/u, '')
+      : COMMAND_CODE_DEFAULTS.defaultBaseURL,
     maxTokens: DEFAULT_MAX_TOKENS,
     reasoning: false,
     input: ['text'],
