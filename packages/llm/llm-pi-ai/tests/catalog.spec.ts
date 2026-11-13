@@ -601,13 +601,13 @@ describe('catalog routes with per-model configuration', () => {
   })
 
   it('keeps each model its own endpoint when the catalog route declares none', () => {
-    // `opencode` ships no provider-level endpoint: the address lives on every
-    // catalog model, so the route resolves without any configured baseURL.
-    const resolved = resolveProfiles({ opencode: {} })
-    const models = resolved.get('opencode')?.piProvider?.getModels() ?? []
+    const resolved = resolveProfiles({ commandcode: {} })
+    const models = resolved.get('commandcode')?.piProvider?.getModels() ?? []
     expect(models.length).toBeGreaterThan(0)
-    expect(models.every(model => model.baseUrl.length > 0)).toBe(true)
-    expect(resolved.get('opencode')?.piProvider?.baseUrl).toBeUndefined()
+    expect(models.find(model => model.id === 'claude-opus-5-5'))
+      .toMatchObject({ api: 'anthropic-messages', baseUrl: 'https://api.commandcode.ai/provider' })
+    expect(models.find(model => model.id === 'deepseek/deepseek-v4.1-flash'))
+      .toMatchObject({ api: 'openai-completions', baseUrl: 'https://api.commandcode.ai/provider/v1' })
   })
 
   it('repoints a catalog route at another wire protocol without restating its endpoint', () => {
