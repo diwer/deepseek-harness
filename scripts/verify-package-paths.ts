@@ -2,7 +2,7 @@
  * Find stale root-relative `packages/...` references in repo-authored prose and
  * TypeScript. A missing path is reported only when it names a real package leaf
  * outside its own explaining group directory; globs, placeholders, hypothetical
- * packages, and unbuilt `lib/` output are outside the check.
+ * packages, URL paths, and unbuilt `lib/` output are outside the check.
  */
 
 import { existsSync, globSync } from 'node:fs'
@@ -55,7 +55,7 @@ function realPackageNames(repoRoot: string): Set<string> {
  * those are patterns, not real paths. A trailing `.`/`/` (e.g. a sentence-ending
  * period) is trimmed before the existence check.
  */
-const PKG_REF = /\bpackages\/[A-Za-z0-9._/-]+/g
+const PKG_REF = /(?<![\w./-])packages\/[A-Za-z0-9._/-]+/g
 
 function isDriftedPackageReference(repoRoot: string, packageNames: ReadonlySet<string>, ref: string): boolean {
   if (existsSync(resolve(repoRoot, ref))) return false

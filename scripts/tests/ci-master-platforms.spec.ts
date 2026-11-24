@@ -118,9 +118,23 @@ describe('master-only platform scheduling', () => {
     const preflight = build.steps!.find(step => step.name === 'Preflight installed-wheel real API test (POSIX)')!
     expect(preflight.if).toContain('inputs.ci')
     expect(preflight.if).toContain("github.event_name != 'pull_request'")
-    expect(preflight.if).toContain('github.event.pull_request.head.repo.fork')
-    expect(preflight.if).toContain("github.event.pull_request.user.login == 'dependabot[bot]'")
+    expect(preflight.if).toContain('github.event.pull_request.head.repo.full_name == github.repository')
+    expect(preflight.if).toContain("vars.DSH_REAL_API_TESTS_ENABLED == '1'")
+    expect(preflight.if).toContain("github.event.pull_request.user.login != 'dependabot[bot]'")
     expect(preflight.run).toContain('exit 1')
+    for (const [enabled, headRepo, login, expected] of [
+      ['1', 'diwer/deepseek-harness', 'diwer', true],
+      ['0', 'diwer/deepseek-harness', 'diwer', false],
+      ['1', 'untrusted/fork', 'diwer', false],
+      ['1', 'diwer/deepseek-harness', 'dependabot[bot]', false],
+    ] as const) {
+      expect(runInNewContext(preflight.if as string, {
+        inputs: { ci: true }, runner: { os: 'Linux' },
+        vars: { DSH_REAL_API_TESTS_ENABLED: enabled },
+        github: { repository: 'diwer/deepseek-harness', event_name: 'pull_request',
+          event: { pull_request: { head: { repo: { full_name: headRepo } }, user: { login } } } },
+      }, { timeout: 1000 })).toBe(expected)
+    }
   })
 
   it('runs Wine once on hosted master CI and seeds its own apt cache', () => {

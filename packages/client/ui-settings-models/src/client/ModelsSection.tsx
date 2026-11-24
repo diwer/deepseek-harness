@@ -23,7 +23,8 @@
 
 import { useId, useState } from 'react'
 import type { ReactNode } from 'react'
-import { Button, IconPlusOutlineRegular, Menu, Modal, SegmentedControl, rankByName } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, IconPlusOutlineRegular, Menu, Modal, SegmentedControl } from '@deepseek-ai/dsh-client-ui-primitives'
+import { TextSearchIndex } from '@deepseek-ai/dsh-util-text-search'
 import type { InjectFace, PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
 import type { LlmNativeAuth, SettingsNamespaceView } from '@deepseek-ai/dsh-api-remotes/client'
 // Type-only: pulls this package's SlotMap merge (the two Models child slots).
@@ -375,9 +376,9 @@ function Loaded({ injected, renderSlot }: { injected: ModelsSectionFace; renderS
     const namespace = state.namespaces.get(row.entry.settingsNs)
     return namespace === undefined || row.configured ? [] : [{ row, namespace }]
   })
-  const providerMatches = rankByName(addable.map(candidate => ({
-    ...candidate, name: candidate.row.entry.provider, label: candidate.row.entry.displayName,
-  })), (providerQuery ?? '').trim())
+  const providerMatches = new TextSearchIndex(addable, candidate => ({
+    fuzzy: [candidate.row.entry.provider, candidate.row.entry.displayName],
+  })).search(providerQuery ?? '')
   const closeProviderSearch = (): void => {
     setProviderSearchOpen(false)
     setProviderQuery(undefined)
@@ -430,8 +431,10 @@ function Loaded({ injected, renderSlot }: { injected: ModelsSectionFace; renderS
 
   return (
     <div className={styles['section']}>
-      <h2 className={styles['title']}>{t('title')}</h2>
-      <p className={styles['intro']}>{t('intro')}</p>
+      <div className={styles['sectionHeader']}>
+        <h2 className={styles['title']}>{t('title')}</h2>
+        <p className={styles['intro']}>{t('intro')}</p>
+      </div>
       {!state.writable && state.status === 'ready' ? <p className={styles['notice']}>{t('readOnly')}</p> : null}
       {savedIdentity === undefined
         ? null

@@ -71,3 +71,11 @@ describe('historical package references', () => {
       .toEqual([{ file, line: 3, ref: removedReference }])
   })
 })
+
+describe('package reference locations', () => {
+  it('leaves version-pinned URL paths intact while checking local references on the same line', () => {
+    const file = 'docs/upgrade-guide/example/guide.md'
+    expect(scan(file, `See https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.1-alpha.2/${removedReference} and ${removedReference}`))
+      .toEqual([{ file, line: 1, ref: removedReference }])
+  })
+})

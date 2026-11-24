@@ -1778,6 +1778,23 @@ describe('ModelsSection', () => {
     expect(screen.queryByRole('textbox', { name: en.customRoute })).toBeNull()
   })
 
+  it('filters providers by a fuzzy query in the provider field and selects a matching route', async () => {
+    const { mutate, set } = await mountSection()
+    fireEvent.click(screen.getByRole('button', { name: en.add }))
+    const input = screen.getByRole<HTMLInputElement>('textbox', { name: en.provider })
+    fireEvent.change(input, { target: { value: 'antr' } })
+    expect(screen.getByRole('menuitem', { name: 'anthropic' })).toBeTruthy()
+    expect(screen.queryByRole('menuitem', { name: 'zombie' })).toBeNull()
+    fireEvent.change(input, { target: { value: 'no-provider-matches' } })
+    expect(screen.getByRole('status').textContent).toBe(en.providerNoMatches)
+    fireEvent.change(input, { target: { value: 'ANTR' } })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'anthropic' }))
+    expect(input.value).toBe('anthropic')
+    expect(screen.queryByRole('menu')).toBeNull()
+    expect(mutate).not.toHaveBeenCalled()
+    expect(set).not.toHaveBeenCalled()
+  })
+
   it('switches between the modes without losing either draft', async () => {
     await mountSection()
     fireEvent.click(screen.getByRole('button', { name: en.add }))
