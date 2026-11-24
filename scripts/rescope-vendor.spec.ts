@@ -232,6 +232,15 @@ describe('product identifiers', () => {
     expectRoundTrip(file, text, scoped, 1)
   })
 
+  it.each([
+    'apps/web/tests/client-config-sync.e2e.ts',
+    'apps/web/tests/input-plugin-extensions.e2e.ts',
+  ])('keeps a scoped dependency directory leaf while rewriting imports in %s', (file) => {
+    const text = "join(root, 'node_modules', '@deepseek-ai', 'schemastery')\nimport Schema from 'schemastery'\n"
+    const scoped = "join(root, 'node_modules', '@deepseek-ai', 'schemastery')\nimport Schema from '@deepseek-ai/schemastery'\n"
+    expectRoundTrip(file, text, scoped, 1)
+  })
+
   it('rewrites declarations in an older event-name exception', () => {
     const file = 'packages/extensions/cordis-host-runner/src/index.ts'
     const text = "ctx.emit('cordis/inspect-query')\nimport { Context } from 'cordis'\ndeclare module 'cordis' {}\n"
